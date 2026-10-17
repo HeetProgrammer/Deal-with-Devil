@@ -18,6 +18,7 @@ target/
 *.iws
 *.iml
 *.ipr
+out/
 
 ### NetBeans ###
 /nbproject/private/
@@ -31,3 +32,32 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Secrets and local config (never commit) ###
+.env
+.env.*
+!.env.example
+credentials/
+application-local.properties
+application-secret*.properties
+application-local.yml
+application-secret*.yml
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+### Logs ###
+*.log
+logs/
+
+### OS files ###
+.DS_Store
+Thumbs.db
+desktop.ini
+
+### Local database data ###
+*.db
+*.sqlite
+pgdata/
