@@ -44,6 +44,12 @@ public class Round
     @Column(nullable = false)
     private boolean paused = false;
 
+    /**
+     * Optional server-side bidding deadline. Null means no deadline: bidding then stays open until the admin
+     * moves the phase on. Bids arriving at or after the deadline are rejected whatever the phase says.
+     */
+    private Instant biddingDeadline;
+
     @Version
     private long version;
 
