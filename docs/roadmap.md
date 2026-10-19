@@ -36,11 +36,11 @@ Tick the boxes as work is finished. Target for the whole backend: about 12 to 15
 - [x] CORS for the React origin
 
 ## Phase 3: Wallet and ledger (about 2 days)
-- [ ] Integer coin balances; every change writes a `LedgerEntry` (admin, reason, amount, balance after)
-- [ ] Atomic credit and deduct with `@Transactional` and a balance check
+- [x] Integer coin balances; every change writes a `LedgerEntry` (admin, reason, amount, balance after) (`WalletService.applyTo` is the single chokepoint; reason required, zero amounts rejected; not yet compiled or tested)
+- [x] Atomic credit and deduct with `@Transactional` and a balance check (`WalletService.credit` / `deduct`; wallet row is locked with `findByUserIdForUpdate`, balance below zero gives `INSUFFICIENT_BALANCE`)
 - [ ] Admin actions: preset credits (solved Bronze, Silver, Gold), generic hint deduction (participant and problem number), custom amount
-- [ ] Undo by adding a reversing ledger entry
-- [ ] `GET /api/me` (coins, corruption level) and `GET /api/me/history`
+- [x] Undo by adding a reversing ledger entry (`WalletService.reverse`: an entry can be undone once, a reversal cannot be undone, `reversalOf` is unique in the database; the admin endpoint for it is still to do)
+- [ ] `GET /api/me` (coins, corruption level) and `GET /api/me/history` (`GET /api/me` already exists from Phase 2; `/api/me/history` still to do)
 - [ ] Tests for the wallet logic
 
 ## Phase 4: Problems and round flow (about 2 days)
@@ -77,7 +77,7 @@ Tick the boxes as work is finished. Target for the whole backend: about 12 to 15
 - [ ] Optional rate limiting
 - [ ] Optional token version for instant JWT revocation
 - [ ] Integration tests for the main flows
-- [ ] Move secrets to environment variables
+- [ ] Move secrets to environment variables (Google client ID, JWT secret and admin emails done locally; database credentials still use the defaults)
 - [ ] Deployment plan (server, database, HTTPS) and a dry-run with test accounts
 
 ## Frontend (React), in parallel
@@ -97,8 +97,9 @@ Tick the boxes as work is finished. Target for the whole backend: about 12 to 15
 - [ ] Mystery assets (on hold)
 - [x] HackerRank ID: participants can edit it themselves (decided)
 - [ ] Do admins need a HackerRank ID too? (for now the profile gate only applies to participants)
-- [ ] Real admin emails (placeholders in `app.auth.admin-emails` / `ADMIN_EMAILS`) and the real Google OAuth client ID (`GOOGLE_CLIENT_ID`)
-- [ ] Phase 2 is written but not yet compiled or tested: run it, then test login with a real Google token
+- [x] Real admin emails (15 tech team members), the real Google OAuth client ID and a real JWT secret: set as the environment variables `ADMIN_EMAILS`, `GOOGLE_CLIENT_ID` and `JWT_SECRET` (kept out of the repo)
+- [ ] Google Cloud: set the OAuth consent screen (Audience) to In production so non-test users can sign in; add the real React origin to Authorized JavaScript origins once deployed
+- [ ] Phase 2: test login end to end with a real Google token (OAuth client and environment variables are now set up, but no real login has been tried yet)
 
 ## Suggested order
 Phases 1 to 3 give a working login and wallet, then phases 4 and 5 make the core auction usable. Phases 6 and 7 add the extras. Phase 8 comes before the event, not after.

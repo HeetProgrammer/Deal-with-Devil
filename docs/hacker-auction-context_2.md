@@ -20,6 +20,7 @@ A competitive tech event where participants use virtual coins to bid on tech pro
 | Corruption level | 3 levels per participant. Visible to the participant. Can go **up or down** |
 | The devil | Exchanges corruption level for coins: take corruption, get coins. Reversing it (level down) costs coins |
 | Admin actions | Pre-built buttons with a confirm popup (see section 5) |
+| Roles and views | Two roles, PARTICIPANT and ADMIN. Admins see a different app (the admin panel) from participants (the participant app). The login response includes the role so React shows the right one, and the backend blocks `/api/admin/**` for non-admins on its own |
 | Pop-ups | After each transaction, the participant sees a pop-up (bid won or lost, hint deducted, credits, level change) |
 | Mystery assets | **On hold** for now |
 | Coins | Whole-number coins preferred; no floating-point money |
@@ -99,7 +100,7 @@ All phase changes are controlled by the admin.
 ## 6. Safeguards to build in
 - Confirm popup before every admin deduction or credit (prevents wrong-person mis-taps)
 - Block deductions that would take a balance below zero
-- Undo uses a reversing ledger entry, never deletes the original
+- Undo uses a reversing ledger entry, never deletes the original. Each entry can be undone only once, and a reversal itself cannot be undone. Every coin change needs a reason
 - Make redemption cost more than the devil's deal pays, or participants can farm coins by looping
 - Keep a fallback admin login in case OAuth fails on the day
 - Optional: a per-user token version on the server so a JWT can be revoked instantly (for example a cheater or compromised admin)

@@ -58,8 +58,8 @@ public class LedgerEntry
     @JoinColumn(name = "actor_id", updatable = false)
     private User actor;
 
-    /** Set only on REVERSAL entries: the id of the entry being undone. */
-    @Column(updatable = false)
+    /** Set only on REVERSAL entries: the id of the entry being undone. Unique, so an entry can only be undone once even if two requests race. */
+    @Column(updatable = false, unique = true)
     private Long reversalOf;
 
     @Column(nullable = false, updatable = false)
