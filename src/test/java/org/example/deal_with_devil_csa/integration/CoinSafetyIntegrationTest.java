@@ -2,7 +2,6 @@ package org.example.deal_with_devil_csa.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -12,14 +11,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.TimeZone;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.example.deal_with_devil_csa.domain.Bid;
 import org.example.deal_with_devil_csa.domain.LedgerEntry;
@@ -28,22 +25,10 @@ import org.example.deal_with_devil_csa.domain.Problem;
 import org.example.deal_with_devil_csa.domain.Role;
 import org.example.deal_with_devil_csa.domain.Round;
 import org.example.deal_with_devil_csa.domain.RoundPhase;
-import org.example.deal_with_devil_csa.domain.Tier;
 import org.example.deal_with_devil_csa.domain.User;
-import org.example.deal_with_devil_csa.domain.Wallet;
 import org.example.deal_with_devil_csa.exception.ApiException;
 import org.example.deal_with_devil_csa.exception.ErrorCode;
-import org.example.deal_with_devil_csa.repository.AuditLogRepository;
-import org.example.deal_with_devil_csa.repository.BidRepository;
-import org.example.deal_with_devil_csa.repository.GameEventRepository;
-import org.example.deal_with_devil_csa.repository.LedgerEntryRepository;
-import org.example.deal_with_devil_csa.repository.ProblemHintRepository;
-import org.example.deal_with_devil_csa.repository.ProblemRepository;
-import org.example.deal_with_devil_csa.repository.RoundRepository;
-import org.example.deal_with_devil_csa.repository.UserRepository;
-import org.example.deal_with_devil_csa.repository.WalletRepository;
 import org.example.deal_with_devil_csa.security.CurrentUser;
-import org.example.deal_with_devil_csa.security.JwtService;
 import org.example.deal_with_devil_csa.service.AdminLedgerService;
 import org.example.deal_with_devil_csa.service.AuditService;
 import org.example.deal_with_devil_csa.service.AuthService;
@@ -53,7 +38,6 @@ import org.example.deal_with_devil_csa.service.RoundService;
 import org.example.deal_with_devil_csa.service.UserService;
 import org.example.deal_with_devil_csa.service.WalletService;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -64,9 +48,6 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import org.springframework.web.context.WebApplicationContext;
 
 /**
  * The few integration tests that matter for an event where coins are real to the participants. They run against a
@@ -80,23 +61,9 @@ import org.springframework.web.context.WebApplicationContext;
  * Three groups: simultaneous requests cannot break the coin rules; the @PreAuthorize checks hold on the real services;
  * and the HTTP layer answers 401/403 as documented (including a revoked session).
  */
-@SpringBootTest(properties = {
-        "spring.datasource.url=${TEST_DB_URL:jdbc:postgresql://localhost:5433/deal_devil_test}",
-        "spring.jpa.hibernate.ddl-auto=create-drop"
-})
-class CoinSafetyIntegrationTest
+@SpringBootTest(properties = {IntegrationTestSupport.DB_URL_PROPERTY, IntegrationTestSupport.DDL_PROPERTY})
+class CoinSafetyIntegrationTest extends IntegrationTestSupport
 {
-    static
-    {
-        // Same fix as main(): tests skip main(), and a JVM that reports "Asia/Calcutta" can make PostgreSQL reject the connection.
-        TimeZone.setDefault(TimeZone.getTimeZone("Asia/Kolkata"));
-    }
-
-    private static final AtomicInteger COUNTER = new AtomicInteger();
-
-    @Autowired private WebApplicationContext webContext;
-    @Autowired private JwtService jwtService;
-
     @Autowired private BidService bidService;
     @Autowired private WalletService walletService;
     @Autowired private UserService userService;
@@ -105,35 +72,6 @@ class CoinSafetyIntegrationTest
     @Autowired private RoundService roundService;
     @Autowired private AdminLedgerService adminLedgerService;
     @Autowired private AuditService auditService;
-
-    @Autowired private UserRepository userRepository;
-    @Autowired private WalletRepository walletRepository;
-    @Autowired private RoundRepository roundRepository;
-    @Autowired private ProblemRepository problemRepository;
-    @Autowired private ProblemHintRepository hintRepository;
-    @Autowired private BidRepository bidRepository;
-    @Autowired private LedgerEntryRepository ledgerEntryRepository;
-    @Autowired private GameEventRepository eventRepository;
-    @Autowired private AuditLogRepository auditLogRepository;
-
-    private MockMvc mockMvc;
-
-    @BeforeEach
-    void emptyTables()
-    {
-        // Children before parents.
-        auditLogRepository.deleteAllInBatch();
-        eventRepository.deleteAllInBatch();
-        bidRepository.deleteAllInBatch();
-        ledgerEntryRepository.deleteAllInBatch();
-        hintRepository.deleteAllInBatch();
-        problemRepository.deleteAllInBatch();
-        roundRepository.deleteAllInBatch();
-        walletRepository.deleteAllInBatch();
-        userRepository.deleteAllInBatch();
-
-        mockMvc = MockMvcBuilders.webAppContextSetup(webContext).apply(springSecurity()).build();
-    }
 
     @AfterEach
     void clearSecurityContext()
@@ -357,52 +295,9 @@ class CoinSafetyIntegrationTest
         }
     }
 
-    private User saveUser(Role role, long coins)
-    {
-        int n = COUNTER.incrementAndGet();
-        User user = new User();
-        user.setEmail("it-user-" + n + "@example.com");
-        user.setGoogleId("it-google-" + n);
-        user.setName("Test User " + n);
-        user.setHackerRankId("it-hr-" + n);
-        user.setRole(role);
-        user = userRepository.save(user);
-
-        Wallet wallet = new Wallet(user);
-        wallet.setBalance(coins);
-        walletRepository.save(wallet);
-        return user;
-    }
-
     private Round saveRoundInBidding()
     {
-        Round round = new Round();
-        round.setNumber(1);
-        round.setPhase(RoundPhase.BIDDING);
-        return roundRepository.save(round);
-    }
-
-    private Problem saveProblem(Round round, String title)
-    {
-        Problem problem = new Problem();
-        problem.setTitle(title);
-        problem.setCategory("Test");
-        problem.setTier(Tier.BRONZE);
-        problem.setSlots(1);
-        problem.setHackerRankLink("https://example.com/" + title);
-        problem.setBasePrice(50);
-        problem.setRound(round);
-        return problemRepository.save(problem);
-    }
-
-    private long balanceOf(User user)
-    {
-        return walletRepository.findByUserId(user.getId()).orElseThrow().getBalance();
-    }
-
-    private String bearer(User user)
-    {
-        return "Bearer " + jwtService.issue(user).token();
+        return saveRound(RoundPhase.BIDDING);
     }
 
     private static void signIn(User user)
