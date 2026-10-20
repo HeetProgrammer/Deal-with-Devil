@@ -1,7 +1,9 @@
 package org.example.deal_with_devil_csa.repository;
 
+import java.util.List;
 import java.util.Optional;
 
+import org.example.deal_with_devil_csa.domain.Role;
 import org.example.deal_with_devil_csa.domain.Wallet;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
@@ -18,4 +20,8 @@ public interface WalletRepository extends JpaRepository<Wallet, Long>
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select w from Wallet w where w.user.id = :userId")
     Optional<Wallet> findByUserIdForUpdate(@Param("userId") Long userId);
+
+    /** Every wallet of users with a given role, with the users loaded (participant list and leaderboard). */
+    @Query("select w from Wallet w join fetch w.user u where u.role = :role")
+    List<Wallet> findAllByUserRole(@Param("role") Role role);
 }

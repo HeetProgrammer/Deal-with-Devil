@@ -10,6 +10,7 @@ import org.example.deal_with_devil_csa.exception.ErrorCode;
 import org.example.deal_with_devil_csa.repository.LedgerEntryRepository;
 import org.example.deal_with_devil_csa.repository.UserRepository;
 import org.example.deal_with_devil_csa.repository.WalletRepository;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +34,7 @@ public class WalletService
 
     /** Adds coins. amount must be positive. actorId is the admin doing it, or null for system actions. */
     @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
     public LedgerEntry credit(Long userId, long amount, LedgerType type, String reason, Long actorId)
     {
         requirePositive(amount);
@@ -42,6 +44,7 @@ public class WalletService
 
     /** Removes coins. amount must be positive (it is stored negative). Fails if the balance would go below zero. */
     @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
     public LedgerEntry deduct(Long userId, long amount, LedgerType type, String reason, Long actorId)
     {
         requirePositive(amount);
@@ -54,6 +57,7 @@ public class WalletService
      * An entry can be reversed once, and a reversal itself cannot be reversed.
      */
     @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
     public LedgerEntry reverse(Long ledgerEntryId, String reason, Long actorId)
     {
         LedgerEntry original = ledgerEntryRepository.findById(ledgerEntryId)
@@ -77,6 +81,7 @@ public class WalletService
 
     /** A participant's own ledger, newest first. */
     @Transactional(readOnly = true)
+    @PreAuthorize("@guard.isSelf(#userId)")
     public List<LedgerEntry> history(Long userId)
     {
         return ledgerEntryRepository.findByUserIdOrderByCreatedAtDesc(userId);

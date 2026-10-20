@@ -32,13 +32,15 @@ class RoundServiceTest
     private RoundRepository roundRepository;
     @Mock
     private ProblemRepository problemRepository;
+    @Mock
+    private EventService eventService;
 
     private RoundService service;
 
     @BeforeEach
     void setUp()
     {
-        service = new RoundService(roundRepository, problemRepository);
+        service = new RoundService(roundRepository, problemRepository, eventService);
         lenient().when(roundRepository.saveAndFlush(any(Round.class))).thenAnswer(inv -> inv.getArgument(0));
     }
 
@@ -80,7 +82,7 @@ class RoundServiceTest
     // ---- advance ----
 
     @Test
-    void advanceMovesThroughEveryPhaseInOrder()
+    void advanceMovesThroughEveryPhaseUpToSettlement()
     {
         Round round = round(1L, 1, RoundPhase.PREVIEW);
         when(roundRepository.findTopByOrderByNumberDesc()).thenReturn(Optional.of(round));
@@ -88,7 +90,27 @@ class RoundServiceTest
 
         assertThat(service.advance().phase()).isEqualTo(RoundPhase.BIDDING);
         assertThat(service.advance().phase()).isEqualTo(RoundPhase.SETTLEMENT);
-        assertThat(service.advance().phase()).isEqualTo(RoundPhase.SOLVING);
+    }
+
+    @Test
+    void advanceCannotLeaveSettlement()
+    {
+        // Only running settlement moves a round from SETTLEMENT to SOLVING, so bids can never be skipped.
+        Round round = round(1L, 1, RoundPhase.SETTLEMENT);
+        when(roundRepository.findTopByOrderByNumberDesc()).thenReturn(Optional.of(round));
+
+        assertApiError(() -> service.advance(), ErrorCode.INVALID_PHASE);
+
+        assertThat(round.getPhase()).isEqualTo(RoundPhase.SETTLEMENT);
+        verify(roundRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void advanceMovesFromSolvingToResults()
+    {
+        Round round = round(1L, 1, RoundPhase.SOLVING);
+        when(roundRepository.findTopByOrderByNumberDesc()).thenReturn(Optional.of(round));
+
         assertThat(service.advance().phase()).isEqualTo(RoundPhase.RESULTS);
     }
 

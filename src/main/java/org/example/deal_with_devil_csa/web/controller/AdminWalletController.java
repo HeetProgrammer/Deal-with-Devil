@@ -3,6 +3,8 @@ package org.example.deal_with_devil_csa.web.controller;
 import org.example.deal_with_devil_csa.security.CurrentUser;
 import org.example.deal_with_devil_csa.service.AdminWalletService;
 import org.example.deal_with_devil_csa.web.dto.CustomAmountRequest;
+import org.example.deal_with_devil_csa.web.dto.DevilActionRequest;
+import org.example.deal_with_devil_csa.web.dto.DevilActionResponse;
 import org.example.deal_with_devil_csa.web.dto.HintDeductionRequest;
 import org.example.deal_with_devil_csa.web.dto.LedgerEntryResponse;
 import org.example.deal_with_devil_csa.web.dto.PresetCreditRequest;
@@ -47,6 +49,20 @@ public class AdminWalletController
                                       @Valid @RequestBody CustomAmountRequest request)
     {
         return adminWalletService.applyCustom(admin.id(), request);
+    }
+
+    @PostMapping("/devil-deal")
+    public DevilActionResponse devilDeal(@AuthenticationPrincipal CurrentUser admin,
+                                         @Valid @RequestBody DevilActionRequest request)
+    {
+        return adminWalletService.devilDeal(admin.id(), request);
+    }
+
+    @PostMapping("/redemption")
+    public DevilActionResponse redemption(@AuthenticationPrincipal CurrentUser admin,
+                                          @Valid @RequestBody DevilActionRequest request)
+    {
+        return adminWalletService.redeem(admin.id(), request);
     }
 
     @PostMapping("/undo/{entryId}")

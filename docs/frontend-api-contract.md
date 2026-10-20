@@ -22,7 +22,7 @@ Build against this file; every endpoint, shape and error below is final.
 
 ### Roles and the two apps
 Login returns `role`. `PARTICIPANT` → participant app. `ADMIN` → admin panel. The server also rejects every
-`/api/admin/**` call from a non-admin with `403 FORBIDDEN`.
+`/api/admin/**` call from a non-admin with `403 FORBIDDEN`. Every service method also checks role and ownership on its own: a participant can only ever read or change their own data, so a `403 FORBIDDEN` can also come from a non-admin route if something is requested for another user. The UI does not need to handle this separately.
 
 ### Session
 - JWT lifetime is about 3 hours (`expiresAt`).
@@ -112,7 +112,7 @@ interface ErrorResponse {
 | `BIDDING_CLOSED` | 409 | Lock the bid screen, refetch the round |
 | `ALREADY_SETTLED` | 409 | Show message |
 | `CORRUPTION_LIMIT_REACHED` | 409 | Show message |
-| `TOO_MANY_REQUESTS` | 429 | "Slow down" |
+| `TOO_MANY_REQUESTS` | 429 | "Slow down" (today only returned after repeated failed fallback admin sign-ins) |
 | `SERVICE_UNAVAILABLE` | 503 | "Try again shortly" |
 | `INTERNAL_ERROR` | 500 | Generic |
 
@@ -171,7 +171,7 @@ interface LedgerEntryResponse {
 interface AdminLedgerEntryResponse extends LedgerEntryResponse {
   userId: number;
   userName: string | null;
-  actorName: string | null;          // admin who did it; null for system actions (settlement)
+  actorName: string | null;          // admin who did it (their email if they have no name); null for system actions (settlement)
   undone: boolean;                   // true if a reversal already exists for this entry
 }
 
@@ -347,8 +347,10 @@ Also used later to correct the HackerRank ID.
 ### `PUT /api/rounds/current/problems/{problemId}/bid`
 Place or change a sealed bid. Body `BidRequest`. `200` `BidResponse` (status `PENDING`).
 - One bid per participant per problem; calling again replaces the amount.
+- Participants only: an admin calling this gets `403 FORBIDDEN`.
 - Only valid in phase `BIDDING`, not paused, before `biddingDeadline`.
-- Errors: `BIDDING_CLOSED`, `BID_EXCEEDS_BALANCE` (sum of all the participant's bids in the round would exceed their coins), `PROBLEM_NOT_FOUND` (also when the problem is not in the current round), `VALIDATION_FAILED` (amount < 1).
+- Errors: `BIDDING_CLOSED`, `BID_EXCEEDS_BALANCE` (sum of all the participant's bids in the round would exceed their coins), `PROBLEM_NOT_FOUND` (also when the problem is not in the current round), `VALIDATION_FAILED` (amount < 1, or below the problem's `basePrice`; `details.amount` says which).
+- A bid must be at least the problem's reserve price (`basePrice` in the preview). Disable or warn in the bid input below that amount.
 - Bids are secret; a participant only ever sees their own.
 
 ### `GET /api/me/bids`
@@ -357,7 +359,7 @@ After settlement: `status` is `WON`, `LOST` or `UNAFFORDABLE`, and winners get `
 "My problems" = bids with `status === 'WON'`.
 
 ### `GET /api/leaderboard`
-`200` `LeaderboardEntry[]`, sorted by `coins` descending (participants only). Highlight the row where `userId` equals the signed-in user.
+`200` `LeaderboardEntry[]`, sorted by `coins` descending, then by name (participants with a completed profile only). Highlight the row where `userId` equals the signed-in user.
 
 ---
 
@@ -371,8 +373,8 @@ After settlement: `status` is `WON`, `LOST` or `UNAFFORDABLE`, and winners get `
 | `POST /api/admin/rounds/current/advance` | none | `200` `RoundResponse` | Next phase. `INVALID_PHASE` if paused, finished, leaving `PREVIEW` with no problems, or in `SETTLEMENT` (use settle instead) |
 | `POST /api/admin/rounds/current/pause` | none | `200` `RoundResponse` | Idempotent. Paused rounds reject bids |
 | `POST /api/admin/rounds/current/resume` | none | `200` `RoundResponse` | Idempotent |
-| `PUT /api/admin/rounds/current/bidding-deadline` | `BiddingDeadlineRequest` | `200` `RoundResponse` | Allowed in `PREVIEW` or `BIDDING`. `null` clears it. Bids at or after the deadline are rejected |
-| `POST /api/admin/rounds/current/settle` | none | `200` `SettlementSummaryResponse` | Only in `SETTLEMENT`. Runs the Vickrey settlement, charges winners, moves the round to `SOLVING`. `ALREADY_SETTLED` if repeated, `INVALID_PHASE` otherwise |
+| `PUT /api/admin/rounds/current/bidding-deadline` | `BiddingDeadlineRequest` | `200` `RoundResponse` | Allowed in `PREVIEW` or `BIDDING`. `null` clears it. A deadline must be in the future (`VALIDATION_FAILED`, `details.deadline`); to stop bidding now, advance the phase instead. Bids at or after the deadline are rejected |
+| `POST /api/admin/rounds/current/settle` | none | `200` `SettlementSummaryResponse` | Only in `SETTLEMENT`. Runs the Vickrey settlement, charges winners, moves the round to `SOLVING`. `ALREADY_SETTLED` if repeated, `INVALID_PHASE` if the round is not in `SETTLEMENT` or is paused. Coins, bid statuses and the phase change in one transaction |
 | `GET /api/admin/rounds/current/settlement` | none | `200` `SettlementSummaryResponse` | Re-read the summary after settlement. `INVALID_PHASE` before settlement |
 
 Phase buttons by `phase`:
@@ -408,8 +410,11 @@ Settlement rule for display: for each problem, the top `slots` bidders win and a
 | Call | Body | Success |
 |---|---|---|
 | `GET /api/admin/users` | none | `200` `MeResponse[]`, participants only, sorted by name |
-| `GET /api/admin/users/{userId}/hints/{problemId}` | none | `200` `HintResponse`: the hint version and password matching this participant's current corruption level |
+| `GET /api/admin/users/{userId}/hints/{problemId}` | none | `200` `HintResponse`: the hint version and password matching this participant's current corruption level; `404 NOT_FOUND` if no hint has been written for that level yet |
 | `PUT /api/admin/users/{userId}/corruption-level` | `CorruptionLevelRequest` | `200` `MeResponse` |
+| `POST /api/admin/users/{userId}/revoke-sessions` | none | `204` |
+
+`revoke-sessions` signs the participant out everywhere: every token issued to them earlier is rejected with `401 TOKEN_INVALID` on its next use. They can sign in again normally. `404 USER_NOT_FOUND` for an unknown id. Use it for a cheater or a lost device; show a confirm popup first.
 
 The participant manager table shows name, HackerRank ID, email, coins and corruption level, with a row action
 menu for every button below. "Give hint" flow: confirm popup → `GET .../hints/{problemId}` to show which text and
@@ -435,6 +440,28 @@ Disable "Devil's deal" at level 3 and "Redemption" at level 1 using the particip
 `GET /api/admin/ledger?userId={id}&limit={n}` → `200` `AdminLedgerEntryResponse[]`, newest first.
 `userId` optional (all participants); `limit` defaults to 100, max 500.
 Show an "Undo" button only when `type !== 'REVERSAL'` and `undone === false`.
+
+### Audit log
+
+`GET /api/admin/audit?actorId={id}&limit={n}` → `200` `AuditLogResponse[]`, newest first.
+`actorId` optional (everyone); `limit` defaults to 100, max 500.
+
+```ts
+interface AuditLogResponse {
+  id: number;
+  actorId: number;
+  actorName: string | null;
+  actorEmail: string;
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  path: string;        // e.g. "/api/admin/rounds/current/settle"
+  status: number;      // HTTP status the call ended with: 2xx went through, 4xx/5xx was refused or failed
+  createdAt: string;
+}
+```
+
+- Every state-changing call to `/api/admin/**` is logged automatically, including refused ones and attempts by participants (status 403). Read-only calls are not logged.
+- Request bodies are never stored. For coin details use the ledger viewer.
+- Show it as a read-only table in the admin panel; there is nothing to create or edit.
 
 ---
 
@@ -466,6 +493,7 @@ Show an "Undo" button only when `type !== 'REVERSAL'` and `undone === false`.
 | Action buttons with confirm popups | `/api/admin/wallet/...` |
 | Hint lookup | `GET /api/admin/users/{userId}/hints/{problemId}` |
 | Ledger viewer + undo | `GET /api/admin/ledger`, `POST /api/admin/wallet/undo/{entryId}` |
+| Audit log viewer | `GET /api/admin/audit` |
 
 ### Participant screen behaviour by phase
 

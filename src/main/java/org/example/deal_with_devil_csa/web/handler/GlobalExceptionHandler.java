@@ -8,12 +8,14 @@ import org.example.deal_with_devil_csa.exception.ErrorCode;
 import org.example.deal_with_devil_csa.web.dto.ErrorResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -159,6 +161,14 @@ public class GlobalExceptionHandler
         // Full cause goes to the log only; constraint names must not leak to the client.
         log.warn("Data integrity violation on {}: {}", request.getRequestURI(), ex.getMostSpecificCause().getMessage());
         return build(ErrorCode.CONFLICT, null, request, null);
+    }
+
+    @ExceptionHandler({DataAccessResourceFailureException.class, CannotCreateTransactionException.class})
+    public ResponseEntity<ErrorResponse> handleDatabaseUnavailable(Exception ex, HttpServletRequest request)
+    {
+        // The database cannot be reached: tell the user to retry shortly. Never a 401, so nobody is signed out.
+        log.error("Database unavailable on {} {}", request.getMethod(), request.getRequestURI(), ex);
+        return build(ErrorCode.SERVICE_UNAVAILABLE, null, request, null);
     }
 
     // ---- Last resort ----

@@ -25,6 +25,7 @@ public enum ErrorCode
 
     // Auth
     INVALID_GOOGLE_TOKEN(HttpStatus.UNAUTHORIZED, "The Google sign-in token is invalid."),
+    INVALID_CREDENTIALS(HttpStatus.UNAUTHORIZED, "The email or passcode is incorrect."),
     EMAIL_NOT_VERIFIED(HttpStatus.FORBIDDEN, "Your Google email is not verified."),
     TOKEN_EXPIRED(HttpStatus.UNAUTHORIZED, "Your session has expired. Please sign in again."),
     TOKEN_INVALID(HttpStatus.UNAUTHORIZED, "Your session is invalid. Please sign in again."),

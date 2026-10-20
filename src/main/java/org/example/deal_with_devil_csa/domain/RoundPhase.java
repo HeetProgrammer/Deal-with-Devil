@@ -19,4 +19,17 @@ public enum RoundPhase
         RoundPhase[] all = values();
         return ordinal() + 1 < all.length ? all[ordinal() + 1] : null;
     }
+
+    /** Human-readable name, used in notification messages. */
+    public String getLabel()
+    {
+        return switch (this)
+        {
+            case PREVIEW -> "Preview";
+            case BIDDING -> "Sealed bidding";
+            case SETTLEMENT -> "Settlement";
+            case SOLVING -> "Solving";
+            case RESULTS -> "Results";
+        };
+    }
 }

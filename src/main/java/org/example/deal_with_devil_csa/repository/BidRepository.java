@@ -17,4 +17,12 @@ public interface BidRepository extends JpaRepository<Bid, Long>
     /** Every bid of one round in a given status, with problems and bidders loaded (used by settlement). */
     @Query("select b from Bid b join fetch b.problem p join fetch b.user where p.round.id = :roundId and b.status = :status order by b.id")
     List<Bid> findByRoundAndStatus(@Param("roundId") Long roundId, @Param("status") BidStatus status);
+
+    /** Every bid of one round whatever its status, with problems and bidders loaded (used for the settlement summary). */
+    @Query("select b from Bid b join fetch b.problem p join fetch b.user where p.round.id = :roundId order by b.id")
+    List<Bid> findAllByRound(@Param("roundId") Long roundId);
+
+    /** The bids of one problem in a given status with the bidders loaded, highest bid first (used for the winners list). */
+    @Query("select b from Bid b join fetch b.user where b.problem.id = :problemId and b.status = :status order by b.amount desc, b.submittedAt asc, b.id asc")
+    List<Bid> findByProblemAndStatus(@Param("problemId") Long problemId, @Param("status") BidStatus status);
 }

@@ -4,14 +4,17 @@ import java.util.List;
 
 import org.example.deal_with_devil_csa.exception.ErrorCode;
 import org.example.deal_with_devil_csa.repository.UserRepository;
+import org.example.deal_with_devil_csa.security.AdminAuditFilter;
 import org.example.deal_with_devil_csa.security.JwtAuthenticationFilter;
 import org.example.deal_with_devil_csa.security.JwtService;
 import org.example.deal_with_devil_csa.security.SecurityErrorWriter;
+import org.example.deal_with_devil_csa.service.AuditService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -22,13 +25,15 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 @Configuration
+@EnableMethodSecurity   // switches on the @PreAuthorize checks on the service functions
 public class SecurityConfig
 {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http, JwtService jwtService, UserRepository userRepository,
-                                           SecurityErrorWriter errorWriter) throws Exception
+                                           SecurityErrorWriter errorWriter, AuditService auditService) throws Exception
     {
         JwtAuthenticationFilter jwtFilter = new JwtAuthenticationFilter(jwtService, userRepository, errorWriter);
+        AdminAuditFilter auditFilter = new AdminAuditFilter(auditService);
 
         http
                 .csrf(AbstractHttpConfigurer::disable)          // stateless Bearer-token API, no cookies
@@ -38,6 +43,7 @@ public class SecurityConfig
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/auth/google").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/auth/admin-fallback").permitAll()
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .exceptionHandling(e -> e
@@ -45,7 +51,9 @@ public class SecurityConfig
                                 errorWriter.write(request, response, ErrorCode.UNAUTHORIZED))
                         .accessDeniedHandler((request, response, ex) ->
                                 errorWriter.write(request, response, ErrorCode.FORBIDDEN)))
-                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+                // Right after the JWT filter, so the signed-in user is known when admin calls are audited.
+                .addFilterAfter(auditFilter, JwtAuthenticationFilter.class);
         return http.build();
     }
 

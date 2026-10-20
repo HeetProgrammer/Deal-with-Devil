@@ -8,10 +8,14 @@ import org.example.deal_with_devil_csa.domain.User;
 import org.example.deal_with_devil_csa.exception.ApiException;
 import org.example.deal_with_devil_csa.exception.ErrorCode;
 import org.example.deal_with_devil_csa.repository.UserRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import jakarta.servlet.FilterChain;
@@ -29,6 +33,7 @@ import jakarta.servlet.http.HttpServletResponse;
  */
 public class JwtAuthenticationFilter extends OncePerRequestFilter
 {
+    private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
     private static final String BEARER = "Bearer ";
 
     private final JwtService jwtService;
@@ -68,6 +73,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter
             errorWriter.write(request, response, e.getCode());
             return;
         }
+        catch (RuntimeException e)
+        {
+            // Not a problem with the token (for example the database is down): report it plainly and never as a
+            // 401, so the frontend shows a message instead of signing the user out.
+            log.error("Could not check the sign-in token for {} {}", request.getMethod(), request.getRequestURI(), e);
+            errorWriter.write(request, response,
+                    e instanceof DataAccessException || e instanceof CannotCreateTransactionException
+                            ? ErrorCode.SERVICE_UNAVAILABLE
+                            : ErrorCode.INTERNAL_ERROR);
+            return;
+        }
 
         if (user.getRole() == Role.PARTICIPANT && !user.isProfileComplete() && !isProfileExempt(request))
         {
@@ -83,10 +99,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter
         chain.doFilter(request, response);
     }
 
-    /** The only URLs an incomplete participant may call: read themselves, submit the form, sign in. */
+    /** The only URLs an incomplete participant may call: read themselves, submit the form, read the game config, sign in. */
     private boolean isProfileExempt(HttpServletRequest request)
     {
         String path = request.getRequestURI();
-        return path.equals("/api/me") || path.equals("/api/me/profile") || path.startsWith("/api/auth/");
+        return path.equals("/api/me") || path.equals("/api/me/profile") || path.equals("/api/config")
+                || path.startsWith("/api/auth/");
     }
 }

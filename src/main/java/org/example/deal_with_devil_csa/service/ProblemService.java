@@ -20,6 +20,7 @@ import org.example.deal_with_devil_csa.web.dto.HintRequest;
 import org.example.deal_with_devil_csa.web.dto.HintResponse;
 import org.example.deal_with_devil_csa.web.dto.ProblemPreviewResponse;
 import org.example.deal_with_devil_csa.web.dto.ProblemRequest;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,6 +46,7 @@ public class ProblemService
     // ---- Admin: problem bank ----
 
     @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
     public AdminProblemResponse create(ProblemRequest request)
     {
         Problem problem = new Problem();
@@ -55,6 +57,7 @@ public class ProblemService
 
     /** Full replace. A missing basePrice falls back to the configured price for the tier. */
     @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
     public AdminProblemResponse update(Long problemId, ProblemRequest request)
     {
         Problem problem = load(problemId);
@@ -64,6 +67,7 @@ public class ProblemService
     }
 
     @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
     public void delete(Long problemId)
     {
         Problem problem = load(problemId);
@@ -73,6 +77,7 @@ public class ProblemService
     }
 
     @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('ADMIN')")
     public AdminProblemResponse get(Long problemId)
     {
         return toAdminResponse(load(problemId));
@@ -80,6 +85,7 @@ public class ProblemService
 
     /** The whole bank, or only one round's problems. Small data set, so one hint query per problem is fine. */
     @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('ADMIN')")
     public List<AdminProblemResponse> list(Long roundId)
     {
         List<Problem> problems = roundId == null
@@ -92,6 +98,7 @@ public class ProblemService
 
     /** Creates or replaces the hint version for one corruption level (1 to 3). */
     @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
     public HintResponse upsertHint(Long problemId, int corruptionLevel, HintRequest request)
     {
         if (corruptionLevel < User.MIN_CORRUPTION_LEVEL || corruptionLevel > User.MAX_CORRUPTION_LEVEL)
@@ -113,6 +120,7 @@ public class ProblemService
 
     /** Preview (no link, no hints) of the current round's problems. */
     @Transactional(readOnly = true)
+    @PreAuthorize("isAuthenticated()")
     public List<ProblemPreviewResponse> currentRoundPreview()
     {
         Round round = roundRepository.findTopByOrderByNumberDesc()

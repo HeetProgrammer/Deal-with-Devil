@@ -1,6 +1,6 @@
 # Hacker Auction: Project Context
 
-Read this first. It captures every design decision made so far, so anyone joining the project can get up to speed without re-asking.
+Read this first. It captures every design decision made so far, so anyone joining the project can get up to speed without re-asking. Build status is tracked in `roadmap.md`; every endpoint and response shape is in `frontend-api-contract.md`.
 
 ## 1. What the event is
 
@@ -20,12 +20,12 @@ A competitive tech event where participants use virtual coins to bid on tech pro
 | Corruption level | 3 levels per participant. Visible to the participant. Can go **up or down** |
 | The devil | Exchanges corruption level for coins: take corruption, get coins. Reversing it (level down) costs coins |
 | Admin actions | Pre-built buttons with a confirm popup (see section 5) |
-| Roles and views | Two roles, PARTICIPANT and ADMIN. Admins see a different app (the admin panel) from participants (the participant app). The login response includes the role so React shows the right one, and the backend blocks `/api/admin/**` for non-admins on its own |
+| Roles and views | Two roles, PARTICIPANT and ADMIN. Admins see a different app (the admin panel) from participants (the participant app). The login response includes the role so React shows the right one, and the backend blocks `/api/admin/**` for non-admins on its own. Every service method also carries its own role or ownership check (`@PreAuthorize` with `AccessGuard`), so a participant can only read or change their own data even if a controller is wrong |
 | Pop-ups | After each transaction, the participant sees a pop-up (bid won or lost, hint deducted, credits, level change) |
 | Mystery assets | **On hold** for now |
 | Coins | Whole-number coins preferred; no floating-point money |
 | Backend | **Java + Spring Boot** |
-| Auth | **Google sign-in, then our own JWT.** React gets a Google ID token, sends it to the backend, the backend verifies it and issues its own **JWT valid 2 to 3 hours** so participants don't have to log in again. A Spring Security filter validates the JWT (sent in the `Authorization: Bearer` header) on every request. Admin role comes from an email allowlist in the config file |
+| Auth | **Google sign-in, then our own JWT.** React gets a Google ID token, sends it to the backend, the backend verifies it and issues its own **JWT valid 3 hours by default** (`app.auth.jwt-expiry-hours`; the frontend calls `POST /api/auth/refresh` before it runs out) so participants don't have to log in again. A Spring Security filter validates the JWT (sent in the `Authorization: Bearer` header) on every request. Admin role comes from an email allowlist in the config file |
 | Frontend | **React JS** |
 | Exact numbers | Prices, rewards, devil exchange rates and hint price are **to be decided later** (kept in a config file) |
 
@@ -43,7 +43,7 @@ Why: bidding your true value is the best strategy, so there are no bidding games
 
 Example (k = 2): bids 90, 70, 50, 30. The top two win and both pay 50.
 
-Open edge case: if a participant wins several problems and the total exceeds their balance. Preferred fix is to cap total bids at their balance when they submit.
+Edge case (handled): a participant could win several problems whose prices add up to more than their balance. Bids are capped when they are placed: all of one participant's bids in a round together cannot exceed their coins (`BID_EXCEEDS_BALANCE`), and a bid below the problem's reserve price is rejected. If an admin deducts coins after bidding, a winner who can no longer pay is marked `UNAFFORDABLE` at settlement and the slot is not reassigned.
 
 ## 4. Round flow
 
@@ -71,7 +71,7 @@ All phase changes are controlled by the admin.
 - Result events for participant pop-ups (polling or Server-Sent Events, no WebSockets needed)
 - Leaderboard
 - Config file for tier prices, rewards, hint price, preset amounts, devil rates
-- Safety: balance and level-limit checks, audit log, rate limiting
+- Safety: balance and level-limit checks, audit log (built), ownership and role checks (built), rate limiting (so far only on the backup admin sign-in)
 
 ### Frontend (React)
 
@@ -102,8 +102,9 @@ All phase changes are controlled by the admin.
 - Block deductions that would take a balance below zero
 - Undo uses a reversing ledger entry, never deletes the original. Each entry can be undone only once, and a reversal itself cannot be undone. Every coin change needs a reason
 - Make redemption cost more than the devil's deal pays, or participants can farm coins by looping
-- Keep a fallback admin login in case OAuth fails on the day
-- Optional: a per-user token version on the server so a JWT can be revoked instantly (for example a cheater or compromised admin)
+- Keep a fallback admin login in case OAuth fails on the day (built: `POST /api/auth/admin-fallback`, allowlisted email plus a shared passcode, off while no passcode is configured)
+- Ownership and role checks on every service method, on top of the URL rule: admin-only operations need `ADMIN`, personal data (me, history, bids, events, refresh) needs the caller's own id, and bidding needs the PARTICIPANT role. Admin wallet buttons also check that the `adminId` is the signed-in admin
+- A per-user token version on the server so a JWT can be revoked instantly (for example a cheater or compromised admin). The JWT filter rejects a stale version, and `POST /api/admin/users/{userId}/revoke-sessions` bumps it
 - Keep the frontend free of pasted third-party scripts (the JWT lives in the browser, so XSS is the main risk); configure CORS to allow the `Authorization` header from the React origin
 - Answers and hint passwords are never sent to a participant before they should see them
 

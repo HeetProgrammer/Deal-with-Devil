@@ -2,11 +2,13 @@ package org.example.deal_with_devil_csa.web.controller;
 
 import java.util.List;
 
+import org.example.deal_with_devil_csa.service.BidService;
 import org.example.deal_with_devil_csa.service.ProblemService;
 import org.example.deal_with_devil_csa.web.dto.AdminProblemResponse;
 import org.example.deal_with_devil_csa.web.dto.HintRequest;
 import org.example.deal_with_devil_csa.web.dto.HintResponse;
 import org.example.deal_with_devil_csa.web.dto.ProblemRequest;
+import org.example.deal_with_devil_csa.web.dto.WinnerResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,6 +31,7 @@ import lombok.RequiredArgsConstructor;
 public class AdminProblemController
 {
     private final ProblemService problemService;
+    private final BidService bidService;
 
     /** The whole bank, or only the problems of one round with ?roundId=. */
     @GetMapping
@@ -69,5 +72,12 @@ public class AdminProblemController
                                    @Valid @RequestBody HintRequest request)
     {
         return problemService.upsertHint(problemId, level, request);
+    }
+
+    /** Who won this problem and what they paid. Empty until the round has been settled. */
+    @GetMapping("/{problemId}/winners")
+    public List<WinnerResponse> winners(@PathVariable Long problemId)
+    {
+        return bidService.winners(problemId);
     }
 }

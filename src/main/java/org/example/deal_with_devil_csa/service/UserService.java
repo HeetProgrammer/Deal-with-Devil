@@ -10,6 +10,7 @@ import org.example.deal_with_devil_csa.repository.UserRepository;
 import org.example.deal_with_devil_csa.repository.WalletRepository;
 import org.example.deal_with_devil_csa.web.dto.MeResponse;
 import org.example.deal_with_devil_csa.web.dto.ProfileRequest;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,6 +24,7 @@ public class UserService
     private final WalletRepository walletRepository;
 
     @Transactional(readOnly = true)
+    @PreAuthorize("@guard.isSelf(#userId)")
     public MeResponse getMe(Long userId)
     {
         return toMe(loadUser(userId));
@@ -30,6 +32,7 @@ public class UserService
 
     /** First fill of the mandatory form, and any later correction. */
     @Transactional
+    @PreAuthorize("@guard.isSelf(#userId)")
     public MeResponse updateProfile(Long userId, ProfileRequest request)
     {
         User user = loadUser(userId);
