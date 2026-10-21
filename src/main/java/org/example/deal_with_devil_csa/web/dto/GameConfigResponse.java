@@ -13,7 +13,8 @@ public record GameConfigResponse(
         long hintPrice,
         Devil devil,
         int minCorruptionLevel,
-        int maxCorruptionLevel)
+        int maxCorruptionLevel,
+        int winsPerRound)
 {
     public record TierAmounts(long bronze, long silver, long gold)
     {
@@ -31,6 +32,7 @@ public record GameConfigResponse(
                 props.hintPrice(),
                 new Devil(props.devil().dealPayout(), props.devil().redemptionCost()),
                 User.MIN_CORRUPTION_LEVEL,
-                User.MAX_CORRUPTION_LEVEL);
+                User.MAX_CORRUPTION_LEVEL,
+                props.winsPerRound());
     }
 }

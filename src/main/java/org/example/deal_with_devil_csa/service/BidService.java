@@ -1,9 +1,12 @@
 package org.example.deal_with_devil_csa.service;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
+import org.example.deal_with_devil_csa.config.GameProperties;
 import org.example.deal_with_devil_csa.domain.Bid;
 import org.example.deal_with_devil_csa.domain.BidStatus;
 import org.example.deal_with_devil_csa.domain.Problem;
@@ -28,8 +31,9 @@ import lombok.RequiredArgsConstructor;
 /**
  * Sealed bids. A participant has at most one bid per problem of the current round and can change it while
  * bidding is open. Rules enforced here: the round must be in BIDDING, not paused and before its deadline; the
- * problem must belong to the current round; the bid must reach the problem's reserve price; and all of one
- * participant's bids in the round together must not exceed their coins (coins are only taken at settlement,
+ * problem must belong to the current round; the bid must reach the problem's reserve price; and the
+ * participant's highest bids (as many as they can win per round, game.wins-per-round) must together not exceed
+ * their coins (coins are only taken at settlement,
  * but a participant cannot promise more than they have).
  *
  * Nothing here ever returns another participant's bid.
@@ -43,6 +47,7 @@ public class BidService
     private final BidRepository bidRepository;
     private final WalletRepository walletRepository;
     private final UserRepository userRepository;
+    private final GameProperties gameProperties;
 
     /** Places a new bid or replaces the amount of an existing one. */
     @Transactional
@@ -74,15 +79,28 @@ public class BidService
                 .findFirst()
                 .orElse(null);
 
-        long othersTotal = mine.stream()
-                .filter(b -> b != existing)
-                .mapToLong(Bid::getAmount)
+        // A participant wins at most game.wins-per-round problems, so at most their highest bids can ever be
+        // charged. Only those have to fit in the balance; lower bids are free to exceed it.
+        List<Long> promised = new ArrayList<>();
+        promised.add(amount);
+        for (Bid other : mine)
+        {
+            if (other != existing)
+            {
+                promised.add(other.getAmount());
+            }
+        }
+        int wins = gameProperties.winsPerRound();
+        long mostYouCouldOwe = promised.stream()
+                .sorted(Comparator.reverseOrder())
+                .limit(wins)
+                .mapToLong(Long::longValue)
                 .sum();
-        long total = othersTotal + amount;
-        if (total > wallet.getBalance())
+        if (mostYouCouldOwe > wallet.getBalance())
         {
             throw new ApiException(ErrorCode.BID_EXCEEDS_BALANCE,
-                    "Your bids would add up to " + total + " coins, but you only have " + wallet.getBalance() + ".");
+                    "Your " + wins + " highest bids would add up to " + mostYouCouldOwe
+                            + " coins, but you only have " + wallet.getBalance() + ".");
         }
 
         Bid bid;

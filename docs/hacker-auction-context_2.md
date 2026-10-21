@@ -13,6 +13,7 @@ A competitive tech event where participants use virtual coins to bid on tech pro
 | Participants | **Individual**, not teams |
 | Auction type | **Vickrey-style sealed-bid (blind)** auction |
 | Winners | **One problem can go to many winners** (k slots per problem) |
+| Rounds and problems per person | **3 contest rounds**, each with its own problems. In every round each participant must end with **exactly 3 problems** (built, see section 3a and Phase 9 in `roadmap.md`) |
 | Steal / open pool / dynamic pricing | **Dropped** |
 | Solving | On **HackerRank**. The app only hosts the preview, links and hint passwords |
 | Hints | Three hint versions per problem, one per corruption level. **All hints cost the same.** Which version a participant gets depends on their corruption level |
@@ -43,7 +44,21 @@ Why: bidding your true value is the best strategy, so there are no bidding games
 
 Example (k = 2): bids 90, 70, 50, 30. The top two win and both pay 50.
 
-Edge case (handled): a participant could win several problems whose prices add up to more than their balance. Bids are capped when they are placed: all of one participant's bids in a round together cannot exceed their coins (`BID_EXCEEDS_BALANCE`), and a bid below the problem's reserve price is rejected. If an admin deducts coins after bidding, a winner who can no longer pay is marked `UNAFFORDABLE` at settlement and the slot is not reassigned.
+Edge case (handled in two places, see section 3a): a participant could win several problems whose prices add up to more than their balance. Bids are capped when they are placed: a participant's 3 highest bids in a round together cannot exceed their coins (`BID_EXCEEDS_BALANCE`; only the top 3 count because nobody can win more than 3), and a bid below the problem's reserve price is rejected. If an admin deducts coins after bidding, a winner who can no longer pay is marked `UNAFFORDABLE` at settlement and the slot is not reassigned by settlement (auto fill can hand that unsold slot to someone short).
+
+## 3a. Exactly 3 problems per person (built, design agreed 2026-10-20)
+
+The number 3 lives in `game.wins-per-round`. The earlier per-problem settlement let someone win 0 or 10 problems; the built design has three parts:
+
+1. **Auto slots.** One admin button (`POST /api/admin/rounds/current/slots/auto`, PREVIEW phase only, with a dry run) sets the slots of every problem in the round: total = 3 x participants, spread evenly over the problems (remainder gives one extra slot each), no problem above the participant count. This always gives enough slots: with at least 3 problems, 3N / P is at most N, so the total is always exactly 3N. Nobody hand-edits slots; the admin presses the button again whenever a new participant has signed in. Opening bidding is blocked if total slots are below 3 x participants (decided 2026-10-20). Example: 32 participants and 10 problems = 96 slots = 4 problems with 9 and 6 with 10.
+2. **Global allocation with a cap of 3 wins.** Settlement runs once over all bids of the round instead of once per problem: sort by amount, then earlier submission, then bid id; accept a bid only if the person has fewer than 3 wins and the problem still has a free slot. A problem's price is the first bid rejected because the problem was full, else the reserve price. The bid rule becomes "sum of your 3 highest bids at most your coins".
+3. **Auto fill after settlement.** Anyone with fewer than 3 wins gets problems from the unsold slots at the reserve price (skipping problems they already hold and ones they cannot afford; the person with the fewest problems goes first, and the problem with the most unsold slots). Whatever it cannot finish is listed as `stillShort` for **manual assignment** (the admin gives a specific problem at the reserve price, even over the problem's slots if needed). Both only work in the SOLVING phase and are logged like normal wins. Before bidding closes, **bid coverage** shows who has bid on few or no problems; after settlement, the **allocation view** flags everyone not at 3 and shows unsold slots.
+
+Auto-filled and manually assigned problems cost the **reserve price** (decided 2026-10-20).
+
+Exactly 3 per person per round is a **hard rule** (decided 2026-10-20). Someone who never bids is covered by the auto fill (they get 3 problems at the reserve price if they can afford it).
+
+Assumptions: everyone bids on every problem, no late sign-ups after the slots are set, no admin coin deductions between bidding and settlement. The cap alone cannot guarantee exactly 3 (with exactly 3N slots there is no margin), which is why the auto fill exists.
 
 ## 4. Round flow
 
@@ -68,6 +83,7 @@ All phase changes are controlled by the admin.
   - Devil's deal (coins up, level up)
   - Redemption (coins down, level down)
   - Custom amount, undo via reversing ledger entry
+  - Bulk credit: give every participant the same number of coins in one click (`POST /api/admin/wallet/credit-all`, built). Each participant still gets their own ledger entry and pop-up; a request id makes a double click harmless
 - Result events for participant pop-ups (polling or Server-Sent Events, no WebSockets needed)
 - Leaderboard
 - Config file for tier prices, rewards, hint price, preset amounts, devil rates
@@ -119,7 +135,8 @@ Build order: auth, wallet, bidding, settlement and admin controls first (usable 
 - Tie-break and reserve-price details (current proposal in section 3)
 - How the devil appears: each round, timed, or only on request
 - Mystery assets (on hold)
-- Number of rounds, problems per round, slots per problem
+- Number of problems per round (slots per problem will come from the auto slots rule). The number of rounds is 3
+- Economy across 3 rounds: coins carry over and everyone pays for 3 problems per round, so starting coins and solve rewards must cover that
 
 ## 9. Origin
 Based on the original "Hacker Auction" event document. The following were removed or changed from it: teams, live bidding, steal, open pool, dynamic pricing, in-app solving and in-app hint purchase.

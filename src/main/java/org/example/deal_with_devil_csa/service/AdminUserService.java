@@ -39,7 +39,23 @@ public class AdminUserService
     @PreAuthorize("hasRole('ADMIN')")
     public List<MeResponse> listParticipants()
     {
+        return listParticipants(null);
+    }
+
+    /**
+     * Same list, narrowed by a search text: a participant is kept when the text (trimmed, any letter case) appears
+     * anywhere in their name or their HackerRank ID. A null or blank text keeps everyone. This is how an admin finds
+     * the user id to use in the wallet buttons.
+     */
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('ADMIN')")
+    public List<MeResponse> listParticipants(String search)
+    {
+        String needle = search == null ? "" : search.trim().toLowerCase(java.util.Locale.ROOT);
         return walletRepository.findAllByUserRole(Role.PARTICIPANT).stream()
+                .filter(w -> needle.isEmpty()
+                        || lower(w.getUser().getName()).contains(needle)
+                        || lower(w.getUser().getHackerRankId()).contains(needle))
                 .sorted(Comparator
                         .comparing((Wallet w) -> w.getUser().getName() == null || w.getUser().getName().isBlank())
                         .thenComparing(w -> lower(w.getUser().getName()))

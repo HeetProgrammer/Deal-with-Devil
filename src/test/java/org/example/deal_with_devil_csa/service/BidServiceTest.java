@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Optional;
 
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.example.deal_with_devil_csa.config.GameProperties;
 import org.example.deal_with_devil_csa.domain.Bid;
 import org.example.deal_with_devil_csa.domain.BidStatus;
 import org.example.deal_with_devil_csa.domain.Problem;
@@ -43,6 +44,8 @@ class BidServiceTest
     private static final long ROUND_ID = 1L;
     private static final long P1 = 10L;
     private static final long P2 = 20L;
+    private static final long P3 = 30L;
+    private static final long P4 = 40L;
     /** An instant safely in the past, so "now" is always later than it. */
     private static final Instant OLD = Instant.parse("2026-01-01T00:00:00Z");
 
@@ -63,13 +66,15 @@ class BidServiceTest
     private Round round;
     private Problem problem1;
     private Problem problem2;
+    private Problem problem3;
+    private Problem problem4;
     private final List<Bid> myBids = new ArrayList<>();
 
     @BeforeEach
     void setUp()
     {
         service = new BidService(roundRepository, problemRepository, bidRepository, walletRepository,
-                userRepository);
+                userRepository, gameProperties());
 
         user = new User();
         user.setId(USER_ID);
@@ -83,11 +88,15 @@ class BidServiceTest
 
         problem1 = problem(P1, 50, round);
         problem2 = problem(P2, 50, round);
+        problem3 = problem(P3, 50, round);
+        problem4 = problem(P4, 50, round);
 
         lenient().when(walletRepository.findByUserIdForUpdate(USER_ID)).thenReturn(Optional.of(wallet));
         lenient().when(roundRepository.findTopByOrderByNumberDesc()).thenReturn(Optional.of(round));
         lenient().when(problemRepository.findById(P1)).thenReturn(Optional.of(problem1));
         lenient().when(problemRepository.findById(P2)).thenReturn(Optional.of(problem2));
+        lenient().when(problemRepository.findById(P3)).thenReturn(Optional.of(problem3));
+        lenient().when(problemRepository.findById(P4)).thenReturn(Optional.of(problem4));
         lenient().when(bidRepository.findByUserAndRound(USER_ID, ROUND_ID)).thenReturn(myBids);
         lenient().when(bidRepository.saveAndFlush(any(Bid.class))).thenAnswer(inv -> inv.getArgument(0));
         lenient().when(userRepository.getReferenceById(USER_ID)).thenReturn(user);
@@ -224,6 +233,46 @@ class BidServiceTest
         assertThat(onP1.getAmount()).isEqualTo(600L);
     }
 
+    @Test
+    void onlyTheThreeHighestBidsHaveToFitInTheBalance()
+    {
+        existingBid(5L, problem1, 400);
+        existingBid(6L, problem2, 400);
+        existingBid(7L, problem3, 200);
+
+        // All four bids add up to 1100, but a person wins at most three problems, so only the top three count: 1000.
+        assertThat(service.placeBid(USER_ID, P4, 100).amount()).isEqualTo(100L);
+    }
+
+    @Test
+    void aFourthBidThatBecomesOneOfTheTopThreeAndPushesThemPastTheBalanceIsRejected()
+    {
+        existingBid(5L, problem1, 400);
+        existingBid(6L, problem2, 400);
+        existingBid(7L, problem3, 200);
+
+        // The top three would now be 400 + 400 + 300 = 1100 against a balance of 1000.
+        assertApiError(() -> service.placeBid(USER_ID, P4, 300), ErrorCode.BID_EXCEEDS_BALANCE);
+
+        verify(bidRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void raisingALowBidIntoTheTopThreeIsCheckedAgainstTheBalance()
+    {
+        existingBid(5L, problem1, 400);
+        existingBid(6L, problem2, 400);
+        existingBid(7L, problem3, 200);
+        Bid low = existingBid(8L, problem4, 60);
+
+        // 400 + 400 + 250 = 1050 is too much; 400 + 400 + 200 = 1000 is exactly the balance.
+        assertApiError(() -> service.placeBid(USER_ID, P4, 250), ErrorCode.BID_EXCEEDS_BALANCE);
+        assertThat(low.getAmount()).isEqualTo(60L);
+
+        service.placeBid(USER_ID, P4, 200);
+        assertThat(low.getAmount()).isEqualTo(200L);
+    }
+
     // ---- when bidding is open ----
 
     @Test
@@ -341,6 +390,16 @@ class BidServiceTest
     }
 
     // ---- helpers ----
+
+    private static GameProperties gameProperties()
+    {
+        return new GameProperties(
+                new GameProperties.Tiers(50, 100, 200),
+                new GameProperties.Tiers(100, 200, 400),
+                30,
+                new GameProperties.Devil(100, 150),
+                3);
+    }
 
     private Bid existingBid(Long id, Problem problem, long amount)
     {

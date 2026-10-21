@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -27,11 +28,14 @@ public class AdminUserController
 {
     private final AdminUserService adminUserService;
 
-    /** Every participant with coins and corruption level, sorted by name. */
+    /**
+     * Every participant with coins and corruption level, sorted by name. With ?q=text only the participants whose
+     * name or HackerRank ID contains the text (any letter case) are returned, so the admin can look up a user id.
+     */
     @GetMapping
-    public List<MeResponse> list()
+    public List<MeResponse> list(@RequestParam(required = false) String q)
     {
-        return adminUserService.listParticipants();
+        return adminUserService.listParticipants(q);
     }
 
     /** The hint text and password this participant is entitled to for a problem (by their corruption level). */

@@ -7,6 +7,7 @@ import org.example.deal_with_devil_csa.service.ProblemService;
 import org.example.deal_with_devil_csa.web.dto.AdminProblemResponse;
 import org.example.deal_with_devil_csa.web.dto.HintRequest;
 import org.example.deal_with_devil_csa.web.dto.HintResponse;
+import org.example.deal_with_devil_csa.web.dto.ProblemPreviewRequest;
 import org.example.deal_with_devil_csa.web.dto.ProblemRequest;
 import org.example.deal_with_devil_csa.web.dto.WinnerResponse;
 import org.springframework.http.HttpStatus;
@@ -64,6 +65,17 @@ public class AdminProblemController
     public void delete(@PathVariable Long problemId)
     {
         problemService.delete(problemId);
+    }
+
+    /**
+     * Adds, replaces or (with blank text) removes the question preview that participants read before bidding.
+     * Only while the problem's round is in PREVIEW.
+     */
+    @PutMapping("/{problemId}/preview")
+    public AdminProblemResponse setPreview(@PathVariable Long problemId,
+                                           @Valid @RequestBody ProblemPreviewRequest request)
+    {
+        return problemService.setPreview(problemId, request);
     }
 
     /** Sets the hint version for one corruption level (1 to 3). */

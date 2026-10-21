@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.example.deal_with_devil_csa.config.GameProperties;
 import org.example.deal_with_devil_csa.domain.Bid;
 import org.example.deal_with_devil_csa.domain.BidStatus;
 import org.example.deal_with_devil_csa.domain.EventType;
@@ -83,7 +84,7 @@ class SettlementServiceTest
     {
         WalletService walletService = new WalletService(walletRepository, ledgerEntryRepository, userRepository);
         service = new SettlementService(roundRepository, problemRepository, bidRepository, walletRepository,
-                walletService, eventService);
+                walletService, eventService, gameProperties());
 
         round = round(RoundPhase.SETTLEMENT);
         lenient().when(roundRepository.findTopByOrderByNumberDesc()).thenReturn(Optional.of(round));
@@ -372,6 +373,52 @@ class SettlementServiceTest
                 isNull(), eq(20L));
     }
 
+    // ---- the cap of three wins per person ----
+
+    @Test
+    void aPersonNeverWinsMoreThanThreeProblems_andACappedBidDoesNotSetAPrice()
+    {
+        // One slot each, reserve 20. User 1 bids 100, 90, 80, 70, 60 on problems 10 to 50; user 2 bids 50 on all five.
+        User a = user(1, 1000);
+        User b = user(2, 1000);
+        Problem[] p = {problem(10, 1, 20), problem(20, 1, 20), problem(30, 1, 20), problem(40, 1, 20),
+                problem(50, 1, 20)};
+        long[] aliceBids = {100, 90, 80, 70, 60};
+        Bid[] fromA = new Bid[5];
+        Bid[] fromB = new Bid[5];
+        for (int i = 0; i < 5; i++)
+        {
+            fromA[i] = bid(a, p[i], aliceBids[i], i);
+            fromB[i] = bid(b, p[i], 50, 10 + i);
+        }
+
+        SettlementSummaryResponse summary = service.settle();
+
+        // User 1 keeps the three problems they bid highest on; the other two bids lose because of the cap.
+        for (int i = 0; i < 3; i++)
+        {
+            assertThat(fromA[i].getStatus()).isEqualTo(BidStatus.WON);
+            assertThat(fromA[i].getPricePaid()).isEqualTo(50L);   // user 2's bid was turned away at a full problem
+            assertThat(fromB[i].getStatus()).isEqualTo(BidStatus.LOST);
+        }
+        assertThat(fromA[3].getStatus()).isEqualTo(BidStatus.LOST);
+        assertThat(fromA[4].getStatus()).isEqualTo(BidStatus.LOST);
+
+        // User 2 gets the two free problems at the reserve price: user 1's capped bids never set a price.
+        assertThat(fromB[3].getStatus()).isEqualTo(BidStatus.WON);
+        assertThat(fromB[3].getPricePaid()).isEqualTo(20L);
+        assertThat(fromB[4].getStatus()).isEqualTo(BidStatus.WON);
+        assertThat(fromB[4].getPricePaid()).isEqualTo(20L);
+
+        assertThat(balance(1)).isEqualTo(850L);   // 1000 - 3 x 50
+        assertThat(balance(2)).isEqualTo(960L);   // 1000 - 2 x 20
+        assertThat(summary.totalCollected()).isEqualTo(190L);
+        assertThat(summary.problems()).extracting(SettlementSummaryResponse.ProblemResult::winnerCount)
+                .containsExactly(1, 1, 1, 1, 1);
+        assertThat(summary.problems()).extracting(SettlementSummaryResponse.ProblemResult::clearingPrice)
+                .containsExactly(50L, 50L, 50L, 20L, 20L);
+    }
+
     // ---- guards ----
 
     @Test
@@ -456,6 +503,16 @@ class SettlementServiceTest
     }
 
     // ---- helpers ----
+
+    private static GameProperties gameProperties()
+    {
+        return new GameProperties(
+                new GameProperties.Tiers(50, 100, 200),
+                new GameProperties.Tiers(100, 200, 400),
+                30,
+                new GameProperties.Devil(100, 150),
+                3);
+    }
 
     private User user(long id, long balance)
     {

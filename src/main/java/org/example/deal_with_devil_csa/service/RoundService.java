@@ -1,15 +1,19 @@
 package org.example.deal_with_devil_csa.service;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
+import org.example.deal_with_devil_csa.config.GameProperties;
 import org.example.deal_with_devil_csa.domain.EventType;
+import org.example.deal_with_devil_csa.domain.Problem;
 import org.example.deal_with_devil_csa.domain.Round;
 import org.example.deal_with_devil_csa.domain.RoundPhase;
 import org.example.deal_with_devil_csa.exception.ApiException;
 import org.example.deal_with_devil_csa.exception.ErrorCode;
 import org.example.deal_with_devil_csa.repository.ProblemRepository;
 import org.example.deal_with_devil_csa.repository.RoundRepository;
+import org.example.deal_with_devil_csa.repository.UserRepository;
 import org.example.deal_with_devil_csa.web.dto.RoundResponse;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
@@ -34,6 +38,8 @@ public class RoundService
     private final RoundRepository roundRepository;
     private final ProblemRepository problemRepository;
     private final EventService eventService;
+    private final UserRepository userRepository;
+    private final GameProperties gameProperties;
 
     @Transactional(readOnly = true)
     @PreAuthorize("isAuthenticated()")
@@ -91,6 +97,11 @@ public class RoundService
             throw new ApiException(ErrorCode.INVALID_PHASE, "Add at least one problem before opening bidding.");
         }
 
+        if (round.getPhase() == RoundPhase.PREVIEW)
+        {
+            requireEnoughSlots(round);
+        }
+
         round.setPhase(next);
         round.setPhaseChangedAt(Instant.now());
         Round saved = roundRepository.saveAndFlush(round);
@@ -138,6 +149,33 @@ public class RoundService
     }
 
     // ---- Internals ----
+
+    /**
+     * Hard block on opening bidding (Phase 9): every participant must be able to end the round with exactly
+     * game.wins-per-round problems, which needs at least that many problems and at least wins-per-round x participants
+     * slots in total. The auto slots button always produces exactly that many, so this only fires when the problem set
+     * changed or someone signed up after the button was pressed. The admin presses the button again, then opens bidding.
+     */
+    private void requireEnoughSlots(Round round)
+    {
+        int wins = gameProperties.winsPerRound();
+        List<Problem> problems = problemRepository.findByRoundIdOrderByIdAsc(round.getId());
+        if (problems.size() < wins)
+        {
+            throw new ApiException(ErrorCode.INVALID_PHASE, "A round needs at least " + wins
+                    + " problems before bidding can open (it has " + problems.size() + ").");
+        }
+
+        long participants = userRepository.countCompleteParticipants();
+        long needed = wins * participants;
+        long have = problems.stream().mapToLong(Problem::getSlots).sum();
+        if (have < needed)
+        {
+            throw new ApiException(ErrorCode.INVALID_PHASE, "The round has " + have + " slots but needs at least "
+                    + needed + " (" + wins + " x " + participants + " participants). Press the auto slots button again,"
+                    + " then open bidding.");
+        }
+    }
 
     private RoundResponse setPaused(boolean paused)
     {

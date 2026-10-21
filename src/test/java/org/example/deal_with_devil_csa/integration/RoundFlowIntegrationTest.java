@@ -8,6 +8,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.List;
+
 import org.example.deal_with_devil_csa.domain.Problem;
 import org.example.deal_with_devil_csa.domain.Role;
 import org.example.deal_with_devil_csa.domain.Round;
@@ -32,6 +34,16 @@ class RoundFlowIntegrationTest extends IntegrationTestSupport
 
     // ================= A whole round, start to results =================
 
+    /**
+     * Three participants and four problems (every participant must end with exactly 3). The auto slots button gives
+     * 9 slots: 3, 2, 2, 2. Bids (reserve price 50 everywhere), problems A to D:
+     * p1 150/140/130/120, p2 100/90/70/65, p3 80/61/55/50.
+     * Settlement walks the bids best first with a cap of 3 wins per person: p1 and p2 end with A, B, C (their bids on D
+     * are capped out and set no price), p3 gets A and D. B and C are full when p3's bids arrive, so p3's 61 and 55
+     * become their prices; A and D never fill up and clear at the reserve price of 50.
+     * p3 is left one short (the only unsold slot is on D, which p3 already holds), so auto fill cannot help and the
+     * admin hands p3 problem B by hand.
+     */
     @Test
     void fullRound_fromStartToResults() throws Exception
     {
@@ -53,42 +65,108 @@ class RoundFlowIntegrationTest extends IntegrationTestSupport
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("INVALID_PHASE"));
 
-        // Build the problem and its three hints. One slot, reserve price 50.
-        String problemJson = "{\"title\":\"Find the bug\",\"category\":\"Debugging\",\"tier\":\"BRONZE\",\"slots\":1,"
-                + "\"hackerRankLink\":\"https://example.com/p1\",\"basePrice\":50,\"teaser\":\"A tiny off-by-one\","
-                + "\"roundId\":" + roundId + "}";
-        long problemId = numberAt(bodyOf(send(admin, post("/api/admin/problems"), problemJson)
-                .andExpect(status().isCreated())), "$.id");
+        // Build the four problems (one slot each for now) and the three hints of the first one.
+        long a = createProblem(admin, roundId, "Find the bug", "https://example.com/p1");
+        long b = createProblem(admin, roundId, "Second problem", "https://example.com/p2");
+        long c = createProblem(admin, roundId, "Third problem", "https://example.com/p3");
+        long d = createProblem(admin, roundId, "Fourth problem", "https://example.com/p4");
         for (int level = 1; level <= 3; level++)
         {
-            send(admin, put("/api/admin/problems/" + problemId + "/hints/" + level),
+            send(admin, put("/api/admin/problems/" + a + "/hints/" + level),
                     "{\"hintText\":\"hint-" + level + "\",\"password\":\"pw-" + level + "\"}")
                     .andExpect(status().isOk());
         }
 
-        // Participants see the preview, but never the HackerRank link, hints or passwords.
+        // The admin adds the question preview (own endpoint). Participants cannot.
+        String questionPreview = "Given an array of numbers, return the index of the first duplicate.";
+        send(p1, put("/api/admin/problems/" + a + "/preview"), "{\"preview\":\"hacked\"}")
+                .andExpect(status().isForbidden());
+        send(admin, put("/api/admin/problems/" + a + "/preview"), "{\"preview\":\"" + questionPreview + "\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.preview").value(questionPreview));
+
+        // Participants see the preview text, but never the HackerRank link, hints or passwords.
         String preview = bodyOf(send(p1, get("/api/rounds/current/problems"), null)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].title").value("Find the bug")));
+                .andExpect(jsonPath("$[0].title").value("Find the bug"))
+                .andExpect(jsonPath("$[0].preview").value(questionPreview)));
         assertThat(preview).doesNotContain("example.com").doesNotContain("pw-").doesNotContain("hint-");
 
         // No bidding in the preview phase.
-        send(p1, put("/api/rounds/current/problems/" + problemId + "/bid"), "{\"amount\":100}")
+        send(p1, put("/api/rounds/current/problems/" + a + "/bid"), "{\"amount\":100}")
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("BIDDING_CLOSED"));
 
-        // Open bidding. From now on the problem is frozen.
+        // Opening bidding is blocked: 3 participants x 3 problems each = 9 slots are needed, the problems have 4.
         send(admin, post("/api/admin/rounds/current/advance"), null)
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.phase").value("BIDDING"));
-        send(admin, delete("/api/admin/problems/" + problemId), null)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("INVALID_PHASE"));
 
-        // Three sealed bids. Top bidder (p1, 150) wins and pays the second highest bid (100).
-        bid(p1, problemId, 150);
-        bid(p2, problemId, 100);
-        bid(p3, problemId, 80);
+        // The auto slots button. Participants cannot press it; a dry run shows the plan and saves nothing.
+        send(p1, post("/api/admin/rounds/current/slots/auto").param("dryRun", "true"), null)
+                .andExpect(status().isForbidden());
+        send(admin, post("/api/admin/rounds/current/slots/auto").param("dryRun", "true"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dryRun").value(true))
+                .andExpect(jsonPath("$.participants").value(3))
+                .andExpect(jsonPath("$.problemCount").value(4))
+                .andExpect(jsonPath("$.slotsNeeded").value(9))
+                .andExpect(jsonPath("$.slotsAssigned").value(9));
+        assertThat(slotsOfRound(roundId)).containsExactly(1, 1, 1, 1);
+
+        // The real press: 9 slots over 4 problems, the first problem gets the extra one.
+        send(admin, post("/api/admin/rounds/current/slots/auto").param("dryRun", "false"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dryRun").value(false))
+                .andExpect(jsonPath("$.slotsAssigned").value(9));
+        assertThat(slotsOfRound(roundId)).containsExactly(3, 2, 2, 2);
+
+        // Open bidding. From now on the problem set is frozen, including the slots.
+        send(admin, post("/api/admin/rounds/current/advance"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.phase").value("BIDDING"));
+        send(admin, delete("/api/admin/problems/" + a), null)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_PHASE"));
+        send(admin, put("/api/admin/problems/" + a + "/preview"), "{\"preview\":\"changed after bidding opened\"}")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_PHASE"));
+        send(admin, post("/api/admin/rounds/current/slots/auto").param("dryRun", "false"), null)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_PHASE"));
+
+        // Sealed bids. p1 bids first, so the coverage list (fewest bids first) has p1 last.
+        bid(p1, a, 150);
+        bid(p1, b, 140);
+        bid(p1, c, 130);
+        bid(p1, d, 120);
+        send(p1, get("/api/admin/rounds/current/bid-coverage"), null).andExpect(status().isForbidden());
+        send(admin, get("/api/admin/rounds/current/bid-coverage"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.problemCount").value(4))
+                .andExpect(jsonPath("$.winsPerRound").value(3))
+                .andExpect(jsonPath("$.participants.length()").value(3))
+                .andExpect(jsonPath("$.participants[0].bidCount").value(0))
+                .andExpect(jsonPath("$.participants[0].missingBids").value(4))
+                .andExpect(jsonPath("$.participants[2].userId").value(p1.getId().intValue()))
+                .andExpect(jsonPath("$.participants[2].missingBids").value(0));
+
+        bid(p2, a, 100);
+        bid(p2, b, 90);
+        bid(p2, c, 70);
+        bid(p2, d, 65);
+        bid(p3, a, 80);
+        bid(p3, b, 61);
+        bid(p3, c, 55);
+        bid(p3, d, 50);
+        send(admin, get("/api/admin/rounds/current/bid-coverage"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.participants[0].missingBids").value(0));
+
+        // The allocation view only exists after settlement.
+        send(admin, get("/api/admin/rounds/current/allocation"), null)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_PHASE"));
 
         // Close bidding. Advancing out of settlement is not allowed (settle instead), and bids are now refused.
         send(admin, post("/api/admin/rounds/current/advance"), null)
@@ -97,61 +175,124 @@ class RoundFlowIntegrationTest extends IntegrationTestSupport
         send(admin, post("/api/admin/rounds/current/advance"), null)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("INVALID_PHASE"));
-        send(p3, put("/api/rounds/current/problems/" + problemId + "/bid"), "{\"amount\":120}")
+        send(p3, put("/api/rounds/current/problems/" + a + "/bid"), "{\"amount\":120}")
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("BIDDING_CLOSED"));
 
-        // Settle.
+        // Settle. B and C clear at the bids that were turned away at a full problem (61 and 55); A and D at the reserve.
         send(admin, post("/api/admin/rounds/current/settle"), null)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.totalCollected").value(100))
+                .andExpect(jsonPath("$.totalCollected").value(432))
                 .andExpect(jsonPath("$.problems[0].bidCount").value(3))
-                .andExpect(jsonPath("$.problems[0].winnerCount").value(1))
-                .andExpect(jsonPath("$.problems[0].clearingPrice").value(100));
+                .andExpect(jsonPath("$.problems[0].winnerCount").value(3))
+                .andExpect(jsonPath("$.problems[0].clearingPrice").value(50))
+                .andExpect(jsonPath("$.problems[1].winnerCount").value(2))
+                .andExpect(jsonPath("$.problems[1].clearingPrice").value(61))
+                .andExpect(jsonPath("$.problems[2].winnerCount").value(2))
+                .andExpect(jsonPath("$.problems[2].clearingPrice").value(55))
+                .andExpect(jsonPath("$.problems[3].winnerCount").value(1))
+                .andExpect(jsonPath("$.problems[3].clearingPrice").value(50));
         send(admin, post("/api/admin/rounds/current/settle"), null)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ALREADY_SETTLED"));
 
-        // Coins moved: only the winner paid, and only the clearing price.
-        assertThat(balanceOf(p1)).isEqualTo(400);
-        assertThat(balanceOf(p2)).isEqualTo(500);
-        assertThat(balanceOf(p3)).isEqualTo(500);
+        // Coins moved. p1 and p2 each paid 50 + 61 + 55, p3 paid 50 + 50.
+        assertThat(balanceOf(p1)).isEqualTo(334);
+        assertThat(balanceOf(p2)).isEqualTo(334);
+        assertThat(balanceOf(p3)).isEqualTo(400);
 
-        // Results as each participant sees them. The winner gets the link, the others do not.
+        // Results as each participant sees them. Winners get the link, the others do not.
         send(p1, get("/api/me/bids"), null)
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(4))
                 .andExpect(jsonPath("$[0].status").value("WON"))
-                .andExpect(jsonPath("$[0].pricePaid").value(100))
-                .andExpect(jsonPath("$[0].hackerRankLink").value("https://example.com/p1"));
-        String loserBids = bodyOf(send(p2, get("/api/me/bids"), null)
+                .andExpect(jsonPath("$[0].pricePaid").value(50))
+                .andExpect(jsonPath("$[0].hackerRankLink").value("https://example.com/p1"))
+                .andExpect(jsonPath("$[3].status").value("LOST"));   // capped out on problem D despite bidding 120
+        String p2Bids = bodyOf(send(p2, get("/api/me/bids"), null)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].status").value("LOST")));
-        assertThat(loserBids).doesNotContain("example.com");
+                .andExpect(jsonPath("$[1].pricePaid").value(61))
+                .andExpect(jsonPath("$[3].status").value("LOST")));
+        assertThat(p2Bids).doesNotContain("https://example.com/p4");
+        send(p3, get("/api/me/bids"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[1].status").value("LOST"))
+                .andExpect(jsonPath("$[3].status").value("WON"))
+                .andExpect(jsonPath("$[3].pricePaid").value(50));
 
-        // Pop-ups: the winner and the loser each got their own event.
+        // Pop-ups: everybody got their own events.
         assertThat(bodyOf(send(p1, get("/api/me/events"), null).andExpect(status().isOk()))).contains("BID_WON");
         assertThat(bodyOf(send(p2, get("/api/me/events"), null).andExpect(status().isOk()))).contains("BID_LOST");
 
-        // Admin views of the result, and the winner list.
-        send(admin, get("/api/admin/problems/" + problemId + "/winners"), null)
+        // Admin views of the result, and the winner lists.
+        send(admin, get("/api/admin/problems/" + a + "/winners"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(3));
+        send(admin, get("/api/admin/problems/" + d + "/winners"), null)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].userId").value(p1.getId().intValue()))
-                .andExpect(jsonPath("$[0].pricePaid").value(100));
+                .andExpect(jsonPath("$[0].userId").value(p3.getId().intValue()))
+                .andExpect(jsonPath("$[0].pricePaid").value(50));
         send(admin, get("/api/admin/ledger?userId=" + p1.getId()), null)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].type").value("BID_SETTLEMENT"))
-                .andExpect(jsonPath("$[0].amount").value(-100))
-                .andExpect(jsonPath("$[0].balanceAfter").value(400));
+                .andExpect(jsonPath("$[0].amount").value(-55))
+                .andExpect(jsonPath("$[0].balanceAfter").value(334));
 
-        // Leaderboard: p2 and p3 tie on 500 (rank 1), p1 follows with 400 (rank 3).
+        // The allocation view flags p3 (two problems instead of three) and shows the one unsold slot, on problem D.
+        send(p1, get("/api/admin/rounds/current/allocation"), null).andExpect(status().isForbidden());
+        send(admin, get("/api/admin/rounds/current/allocation"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.winsPerRound").value(3))
+                .andExpect(jsonPath("$.participantCount").value(3))
+                .andExpect(jsonPath("$.atTargetCount").value(2))
+                .andExpect(jsonPath("$.participants[0].userId").value(p3.getId().intValue()))
+                .andExpect(jsonPath("$.participants[0].wins").value(2))
+                .andExpect(jsonPath("$.participants[0].missing").value(1))
+                .andExpect(jsonPath("$.participants[0].atTarget").value(false))
+                .andExpect(jsonPath("$.problems[0].sold").value(3))
+                .andExpect(jsonPath("$.problems[0].unsold").value(0))
+                .andExpect(jsonPath("$.problems[3].unsold").value(1));
+
+        // Auto fill cannot help p3: the only unsold slot is on a problem p3 already holds. Nothing is given out.
+        send(admin, post("/api/admin/rounds/current/auto-fill").param("dryRun", "true"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dryRun").value(true))
+                .andExpect(jsonPath("$.assignments.length()").value(0))
+                .andExpect(jsonPath("$.stillShort.length()").value(1))
+                .andExpect(jsonPath("$.stillShort[0].userId").value(p3.getId().intValue()))
+                .andExpect(jsonPath("$.stillShort[0].missing").value(1));
+
+        // Manual assignment: problem B (full, so it goes over capacity on purpose) at its reserve price of 50.
+        send(admin, post("/api/admin/rounds/current/assignments"),
+                "{\"userId\":" + p3.getId() + ",\"problemId\":" + b + "}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pricePaid").value(50))
+                .andExpect(jsonPath("$.balanceAfter").value(350))
+                .andExpect(jsonPath("$.winsNow").value(3))
+                .andExpect(jsonPath("$.overCapacity").value(true));
+        assertThat(balanceOf(p3)).isEqualTo(350);
+        send(admin, post("/api/admin/rounds/current/assignments"),
+                "{\"userId\":" + p3.getId() + ",\"problemId\":" + b + "}")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CONFLICT"));
+        send(admin, get("/api/admin/rounds/current/allocation"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.atTargetCount").value(3));
+        send(p3, get("/api/me/bids"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[1].status").value("WON"))
+                .andExpect(jsonPath("$[1].pricePaid").value(50))
+                .andExpect(jsonPath("$[1].hackerRankLink").value("https://example.com/p2"));
+
+        // Leaderboard: p3 leads with 350, p1 and p2 tie on 334 (rank 2).
         send(p1, get("/api/leaderboard"), null)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(3))
                 .andExpect(jsonPath("$[0].rank").value(1))
-                .andExpect(jsonPath("$[1].rank").value(1))
-                .andExpect(jsonPath("$[2].rank").value(3))
-                .andExpect(jsonPath("$[2].coins").value(400));
+                .andExpect(jsonPath("$[0].coins").value(350))
+                .andExpect(jsonPath("$[1].rank").value(2))
+                .andExpect(jsonPath("$[2].rank").value(2));
 
         // Finish the round and start the next one.
         send(admin, post("/api/admin/rounds/current/advance"), null)
@@ -227,6 +368,7 @@ class RoundFlowIntegrationTest extends IntegrationTestSupport
         long payout = numberAt(config, "$.devil.dealPayout");
         long cost = numberAt(config, "$.devil.redemptionCost");
         assertThat(cost).isGreaterThan(payout);   // otherwise looping would farm coins
+        assertThat(numberAt(config, "$.winsPerRound")).isEqualTo(3);
 
         // Two deals take the participant from level 1 to 3; a third is refused.
         devilDeal(admin, p).andExpect(jsonPath("$.corruptionLevel").value(2));
@@ -387,6 +529,48 @@ class RoundFlowIntegrationTest extends IntegrationTestSupport
                 .andExpect(jsonPath("$.code").value("MALFORMED_REQUEST"));
     }
 
+    // ================= Finding a participant's id =================
+
+    @Test
+    void participantSearch_findsByNameOrHackerRankId_ignoringLetterCase() throws Exception
+    {
+        User admin = saveUser(Role.ADMIN, 0);
+        User asha = saveUser(Role.PARTICIPANT, 100, "Asha Rao");
+        User ravi = saveUser(Role.PARTICIPANT, 100, "Ravi Kumar");
+        asha.setHackerRankId("ace_coder");
+        userRepository.save(asha);
+        ravi.setHackerRankId("rk_2026");
+        userRepository.save(ravi);
+
+        // Part of a name, in any letter case.
+        send(admin, get("/api/admin/users").param("q", "ASHA"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(asha.getId().intValue()))
+                .andExpect(jsonPath("$[0].hackerRankId").value("ace_coder"));
+
+        // Part of a HackerRank ID, in any letter case, with spaces around it.
+        send(admin, get("/api/admin/users").param("q", "  RK_20 "), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(ravi.getId().intValue()));
+
+        // No match gives an empty list; a blank search or no search gives every participant (never the admin).
+        send(admin, get("/api/admin/users").param("q", "zzz"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+        send(admin, get("/api/admin/users").param("q", "   "), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2));
+        send(admin, get("/api/admin/users"), null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2));
+
+        // Admin only.
+        send(asha, get("/api/admin/users").param("q", "ravi"), null)
+                .andExpect(status().isForbidden());
+    }
+
     // ================= Helpers =================
 
     private ResultActions devilDeal(User admin, User participant) throws Exception
@@ -404,6 +588,21 @@ class RoundFlowIntegrationTest extends IntegrationTestSupport
         send(participant, put("/api/rounds/current/problems/" + problemId + "/bid"), "{\"amount\":" + amount + "}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("PENDING"));
+    }
+
+    /** Creates a Bronze problem in the round through the admin API (one slot, reserve price 50) and returns its id. */
+    private long createProblem(User admin, long roundId, String title, String link) throws Exception
+    {
+        String json = "{\"title\":\"" + title + "\",\"category\":\"Debugging\",\"tier\":\"BRONZE\",\"slots\":1,"
+                + "\"hackerRankLink\":\"" + link + "\",\"basePrice\":50,\"teaser\":\"A tiny off-by-one\","
+                + "\"roundId\":" + roundId + "}";
+        return numberAt(bodyOf(send(admin, post("/api/admin/problems"), json).andExpect(status().isCreated())), "$.id");
+    }
+
+    /** The slots of the round's problems, in id order. */
+    private List<Integer> slotsOfRound(long roundId)
+    {
+        return problemRepository.findByRoundIdOrderByIdAsc(roundId).stream().map(Problem::getSlots).toList();
     }
 
 }

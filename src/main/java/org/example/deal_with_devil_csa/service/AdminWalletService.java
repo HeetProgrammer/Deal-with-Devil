@@ -1,16 +1,26 @@
 package org.example.deal_with_devil_csa.service;
 
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+
 import org.example.deal_with_devil_csa.config.GameProperties;
+import org.example.deal_with_devil_csa.domain.BulkCredit;
 import org.example.deal_with_devil_csa.domain.EventType;
 import org.example.deal_with_devil_csa.domain.LedgerEntry;
 import org.example.deal_with_devil_csa.domain.LedgerType;
+import org.example.deal_with_devil_csa.domain.Role;
 import org.example.deal_with_devil_csa.domain.Tier;
 import org.example.deal_with_devil_csa.domain.User;
+import org.example.deal_with_devil_csa.domain.Wallet;
 import org.example.deal_with_devil_csa.exception.ApiException;
 import org.example.deal_with_devil_csa.exception.ErrorCode;
+import org.example.deal_with_devil_csa.repository.BulkCreditRepository;
 import org.example.deal_with_devil_csa.repository.LedgerEntryRepository;
 import org.example.deal_with_devil_csa.repository.UserRepository;
 import org.example.deal_with_devil_csa.repository.WalletRepository;
+import org.example.deal_with_devil_csa.web.dto.CreditAllRequest;
+import org.example.deal_with_devil_csa.web.dto.CreditAllResponse;
 import org.example.deal_with_devil_csa.web.dto.CustomAmountRequest;
 import org.example.deal_with_devil_csa.web.dto.DevilActionRequest;
 import org.example.deal_with_devil_csa.web.dto.DevilActionResponse;
@@ -18,6 +28,7 @@ import org.example.deal_with_devil_csa.web.dto.HintDeductionRequest;
 import org.example.deal_with_devil_csa.web.dto.LedgerEntryResponse;
 import org.example.deal_with_devil_csa.web.dto.PresetCreditRequest;
 import org.example.deal_with_devil_csa.web.dto.UndoRequest;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,6 +53,7 @@ public class AdminWalletService
     private final UserRepository userRepository;
     private final WalletRepository walletRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
+    private final BulkCreditRepository bulkCreditRepository;
 
     /** "Solved Bronze / Silver / Gold": credits the configured solve reward for the tier. */
     @Transactional
@@ -195,6 +207,71 @@ public class AdminWalletService
                 "A previous change was undone: " + signed(entry.getAmount()) + " coins.",
                 entry.getAmount(), entry.getBalanceAfter(), restoredLevel, null);
         return LedgerEntryResponse.from(entry);
+    }
+
+    /**
+     * "Credit everyone": gives every participant (role PARTICIPANT, profile complete or not) the same number of coins
+     * in one transaction, for the economy between rounds. Each participant gets their own ledger entry (type CUSTOM,
+     * the admin, the reason, the balance after) through WalletService.credit, plus their own pop-up, so a wrong run is
+     * undone entry by entry with the normal undo. People who sign up after the press do not get the coins.
+     *
+     * The request id is claimed first, before any coin moves. It has a unique constraint, so a double click, a retry or
+     * a second tab with the same id is refused with CONFLICT and credits nobody a second time (a request that arrives
+     * at the same moment waits for the first to finish, then fails the same way). Wallets are locked in user id order,
+     * so two different presses at once cannot deadlock.
+     */
+    @Transactional
+    @PreAuthorize("hasRole('ADMIN') and @guard.isSelf(#adminId)")
+    public CreditAllResponse creditAll(Long adminId, CreditAllRequest request)
+    {
+        String requestId = request.requestId().trim();
+        String reason = request.reason().trim();
+        long amount = request.amount();
+
+        List<Wallet> wallets = walletRepository.findAllByUserRole(Role.PARTICIPANT).stream()
+                .sorted(Comparator.comparing((Wallet wallet) -> wallet.getUser().getId()))
+                .toList();
+        if (wallets.isEmpty())
+        {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, null,
+                    Map.of("participants", "There are no participants to credit yet."));
+        }
+
+        if (bulkCreditRepository.existsByRequestId(requestId))
+        {
+            throw alreadyApplied();
+        }
+        BulkCredit press = new BulkCredit();
+        press.setRequestId(requestId);
+        press.setAdminId(adminId);
+        press.setAmountEach(amount);
+        press.setParticipants(wallets.size());
+        press.setReason(reason);
+        try
+        {
+            bulkCreditRepository.saveAndFlush(press);
+        }
+        catch (DataIntegrityViolationException e)
+        {
+            // Another request with the same id got in first (it was still running when we checked above).
+            throw alreadyApplied();
+        }
+
+        for (Wallet wallet : wallets)
+        {
+            Long userId = wallet.getUser().getId();
+            LedgerEntry entry = walletService.credit(userId, amount, LedgerType.CUSTOM, reason, adminId);
+            eventService.personal(userId, EventType.CUSTOM_ADJUSTMENT,
+                    "An admin credited every participant " + signed(amount) + " coins: " + reason,
+                    amount, entry.getBalanceAfter(), null, null);
+        }
+        return new CreditAllResponse(wallets.size(), amount, amount * wallets.size());
+    }
+
+    private static ApiException alreadyApplied()
+    {
+        return new ApiException(ErrorCode.CONFLICT,
+                "This credit was already applied (the same request id was used twice). Nobody was credited again.");
     }
 
     // ---- Internals ----

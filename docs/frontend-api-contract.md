@@ -107,7 +107,7 @@ interface ErrorResponse {
 | `CONFLICT` | 409 | Show message; also used for "HackerRank ID taken" (`details.hackerRankId`) and "already undone" |
 | `CONCURRENT_UPDATE` | 409 | Refetch and let the user retry |
 | `INSUFFICIENT_BALANCE` | 409 | Show message |
-| `BID_EXCEEDS_BALANCE` | 409 | "Your bids add up to more coins than you have" |
+| `BID_EXCEEDS_BALANCE` | 409 | Show `message` ("Your 3 highest bids would add up to X coins, but you only have Y") |
 | `INVALID_PHASE` | 409 | Show message; refetch the round |
 | `BIDDING_CLOSED` | 409 | Lock the bid screen, refetch the round |
 | `ALREADY_SETTLED` | 409 | Show message |
@@ -206,6 +206,7 @@ interface ProblemPreviewResponse {   // participant view: no link, hints or pass
   category: string;
   tier: Tier;
   teaser: string | null;
+  preview: string | null;            // question preview text written by the admin; null until added. Show it on the problem card so people can bid on it
   slots: number;                     // number of winners this problem has
   basePrice: number;                 // reserve price
 }
@@ -223,6 +224,7 @@ interface AdminProblemResponse {
   hackerRankLink: string;
   basePrice: number;
   teaser: string | null;
+  preview: string | null;            // question preview shown to participants; null until added
   roundId: number | null;            // null = bank only
   hints: HintResponse[];             // up to 3, ordered by corruptionLevel
 }
@@ -235,6 +237,9 @@ interface ProblemRequest {
   basePrice?: number | null;         // optional, >= 0; omitted = tier default from /api/config
   teaser?: string | null;            // optional, max 500
   roundId?: number | null;           // optional; omitted = bank only
+}
+interface ProblemPreviewRequest {
+  preview: string | null;            // plain text, max 4000; null or blank removes the preview
 }
 interface HintRequest {
   hintText: string;                  // required, max 2000
@@ -349,7 +354,7 @@ Place or change a sealed bid. Body `BidRequest`. `200` `BidResponse` (status `PE
 - One bid per participant per problem; calling again replaces the amount.
 - Participants only: an admin calling this gets `403 FORBIDDEN`.
 - Only valid in phase `BIDDING`, not paused, before `biddingDeadline`.
-- Errors: `BIDDING_CLOSED`, `BID_EXCEEDS_BALANCE` (sum of all the participant's bids in the round would exceed their coins), `PROBLEM_NOT_FOUND` (also when the problem is not in the current round), `VALIDATION_FAILED` (amount < 1, or below the problem's `basePrice`; `details.amount` says which).
+- Errors: `BIDDING_CLOSED`, `BID_EXCEEDS_BALANCE` (the participant's 3 highest bids in the round, with this one included, would add up to more than their coins; only the top 3 count because nobody can win more than 3 problems, so lower bids may exceed the balance), `PROBLEM_NOT_FOUND` (also when the problem is not in the current round), `VALIDATION_FAILED` (amount < 1, or below the problem's `basePrice`; `details.amount` says which).
 - A bid must be at least the problem's reserve price (`basePrice` in the preview). Disable or warn in the bid input below that amount.
 - Bids are secret; a participant only ever sees their own.
 
@@ -370,11 +375,11 @@ After settlement: `status` is `WON`, `LOST` or `UNAFFORDABLE`, and winners get `
 | Call | Body | Success | Rules |
 |---|---|---|---|
 | `POST /api/admin/rounds` | none | `201` `RoundResponse` | Starts round 1, or the next round. `INVALID_PHASE` unless there is no round yet or the latest is in `RESULTS` |
-| `POST /api/admin/rounds/current/advance` | none | `200` `RoundResponse` | Next phase. `INVALID_PHASE` if paused, finished, leaving `PREVIEW` with no problems, or in `SETTLEMENT` (use settle instead) |
+| `POST /api/admin/rounds/current/advance` | none | `200` `RoundResponse` | Next phase. `INVALID_PHASE` if paused, finished, leaving `PREVIEW` with no problems, leaving `PREVIEW` with fewer than 3 problems or fewer total slots than 3 x participants (press auto slots again first), or in `SETTLEMENT` (use settle instead) |
 | `POST /api/admin/rounds/current/pause` | none | `200` `RoundResponse` | Idempotent. Paused rounds reject bids |
 | `POST /api/admin/rounds/current/resume` | none | `200` `RoundResponse` | Idempotent |
 | `PUT /api/admin/rounds/current/bidding-deadline` | `BiddingDeadlineRequest` | `200` `RoundResponse` | Allowed in `PREVIEW` or `BIDDING`. `null` clears it. A deadline must be in the future (`VALIDATION_FAILED`, `details.deadline`); to stop bidding now, advance the phase instead. Bids at or after the deadline are rejected |
-| `POST /api/admin/rounds/current/settle` | none | `200` `SettlementSummaryResponse` | Only in `SETTLEMENT`. Runs the Vickrey settlement, charges winners, moves the round to `SOLVING`. `ALREADY_SETTLED` if repeated, `INVALID_PHASE` if the round is not in `SETTLEMENT` or is paused. Coins, bid statuses and the phase change in one transaction |
+| `POST /api/admin/rounds/current/settle` | none | `200` `SettlementSummaryResponse` | Only in `SETTLEMENT`. Runs one allocation for the whole round with a cap of 3 wins per person, charges winners, moves the round to `SOLVING`. `ALREADY_SETTLED` if repeated, `INVALID_PHASE` if the round is not in `SETTLEMENT` or is paused. Coins, bid statuses and the phase change in one transaction. Anyone left below 3 problems is topped up afterwards with auto fill (section "Exactly 3 problems per person") |
 | `GET /api/admin/rounds/current/settlement` | none | `200` `SettlementSummaryResponse` | Re-read the summary after settlement. `INVALID_PHASE` before settlement |
 
 Phase buttons by `phase`:
@@ -386,7 +391,66 @@ Phase buttons by `phase`:
 - Pause/Resume toggle always available; disable all phase buttons while `paused`.
 - Always refetch `GET /api/rounds/current` after any of these calls; on `CONCURRENT_UPDATE` refetch and retry.
 
-Settlement rule for display: for each problem, the top `slots` bidders win and all pay the (slots+1)th highest bid, or the problem's `basePrice` if there are not enough bids; ties go to the earlier bid.
+Settlement rule for display: all eligible bids of the round (at or above the problem's reserve price) are ranked by amount, then earlier submission. A bid wins only if its bidder has fewer than 3 wins so far and the problem still has a free slot. Every winner of a problem pays that problem's price: the first bid turned away because the problem was full, else the reserve price (`basePrice`). When nobody would win more than 3 problems this is the same as the plain per-problem Vickrey rule.
+
+### Exactly 3 problems per person (Phase 9)
+
+Every participant must end each round with exactly 3 problems (`game.wins-per-round`). Admin flow for one round:
+
+1. In `PREVIEW`, after the problems are added and sign-ups are done: press **Auto slots**. Dry run first, then apply. Press it again whenever a new participant has signed in. Nobody edits slots by hand.
+2. Open bidding (blocked with `INVALID_PHASE` until there are at least 3 problems and 3 x participants slots).
+3. While bidding is open: **Bid coverage** shows who has bid on few or no problems.
+4. After settlement (`SOLVING`): **Allocation view** flags everyone not at 3. Press **Auto fill** (dry run first). Whoever it cannot finish appears in `stillShort`: finish them with **Manual assignment**.
+
+```ts
+interface AutoSlotsResponse {
+  dryRun: boolean;
+  participants: number;              // participants with a completed profile
+  problemCount: number;
+  slotsNeeded: number;               // 3 x participants
+  slotsAssigned: number;             // equals slotsNeeded when the round has at least 3 problems
+  slotsPerProblem: { problemId: number; title: string; slots: number }[];
+}
+interface BidCoverageResponse {
+  roundId: number; roundNumber: number; problemCount: number; winsPerRound: number;
+  participants: { userId: number; name: string | null; hackerRankId: string | null;
+                  bidCount: number; missingBids: number }[];   // fewest bids first
+}
+interface AllocationViewResponse {
+  roundId: number; roundNumber: number; winsPerRound: number;
+  participantCount: number; atTargetCount: number;
+  participants: { userId: number; name: string | null; hackerRankId: string | null; coins: number;
+                  wins: number; unaffordableBids: number; missing: number; excess: number;
+                  atTarget: boolean }[];                        // people not at 3 first
+  problems: { problemId: number; title: string; slots: number; sold: number; unaffordable: number;
+              unsold: number; overCapacity: number }[];
+}
+interface AutoFillResponse {
+  dryRun: boolean; winsPerRound: number;
+  assignments: { userId: number; name: string | null; hackerRankId: string | null;
+                 problemId: number; problemTitle: string; price: number }[];
+  stillShort: { userId: number; name: string | null; hackerRankId: string | null;
+                wins: number; missing: number }[];
+}
+interface ManualAssignmentRequest { userId: number; problemId: number }
+interface ManualAssignmentResponse {
+  userId: number; problemId: number; problemTitle: string;
+  pricePaid: number; balanceAfter: number; winsNow: number;
+  overCapacity: boolean;             // true: the problem now has more winners than slots (allowed on purpose)
+}
+```
+
+| Call | Body | Success | Rules |
+|---|---|---|---|
+| `POST /api/admin/rounds/current/slots/auto?dryRun=true\|false` | none | `200` `AutoSlotsResponse` | `dryRun` is required (`400 INVALID_PARAMETER` if missing). Only in `PREVIEW` (`INVALID_PHASE`). `VALIDATION_FAILED` with `details.participants` when nobody has completed a profile, or `details.problems` when the round has fewer than 3 problems. Safe to press again |
+| `GET /api/admin/rounds/current/bid-coverage` | none | `200` `BidCoverageResponse` | Any phase of the current round. `404 ROUND_NOT_FOUND` before round 1 |
+| `GET /api/admin/rounds/current/allocation` | none | `200` `AllocationViewResponse` | Only in `SOLVING` or `RESULTS` (`INVALID_PHASE` before) |
+| `POST /api/admin/rounds/current/auto-fill?dryRun=true\|false` | none | `200` `AutoFillResponse` | `dryRun` is required. Only in `SOLVING` (`INVALID_PHASE`). Gives everyone below 3 problems from the unsold slots at the reserve price, skipping problems they already hold and ones they cannot afford. Safe to press again. If two presses collide, one may get `409 CONCURRENT_UPDATE`: refetch |
+| `POST /api/admin/rounds/current/assignments` | `ManualAssignmentRequest` | `200` `ManualAssignmentResponse` | Only in `SOLVING`. Gives one problem to one participant at its reserve price. `CONFLICT` if they already hold it or already have 3 problems, `INSUFFICIENT_BALANCE`, `PROBLEM_NOT_FOUND` (also outside the current round), `USER_NOT_FOUND` (also for admins), `VALIDATION_FAILED` for missing fields |
+
+Auto-filled and manually assigned problems behave exactly like normal wins: they appear in `GET /api/me/bids` with status `WON`, `pricePaid` and the HackerRank link, in the ledger (type `BID_SETTLEMENT`, the admin named in `actorName`, reason says "automatically" or "by an admin"), and as a `BID_WON` pop-up. Show a confirm popup before auto fill (after the dry run) and before every manual assignment.
+
+Suggested admin screens: a **Slots** card in the PREVIEW controls (dry run result, then Apply), a **Bid coverage** table during BIDDING (highlight rows with `missingBids > 0`), and an **Allocation** page in SOLVING with the flagged participants on top, unsold slots per problem, the Auto fill button and a per-row "Give a problem" action for `stillShort` people.
 
 ### Problem bank
 
@@ -397,11 +461,13 @@ Settlement rule for display: for each problem, the top `slots` bidders win and a
 | `POST /api/admin/problems` | `ProblemRequest` | `201` `AdminProblemResponse` |
 | `PUT /api/admin/problems/{problemId}` | `ProblemRequest` (full replace) | `200` `AdminProblemResponse` |
 | `DELETE /api/admin/problems/{problemId}` | none | `204` |
+| `PUT /api/admin/problems/{problemId}/preview` | `ProblemPreviewRequest` | `200` `AdminProblemResponse` |
 | `PUT /api/admin/problems/{problemId}/hints/{level}` | `HintRequest` | `200` `HintResponse` |
 | `GET /api/admin/problems/{problemId}/winners` | none | `200` `WinnerResponse[]` (after settlement) |
 
 - Problems attached to a round can be created, edited, moved or deleted only while that round is in `PREVIEW`; otherwise `409 INVALID_PHASE`. Disable those controls when `phase !== 'PREVIEW'`.
-- `PUT` replaces everything; send all fields.
+- `PUT` replaces everything; send all fields. It does not touch the question preview.
+- The question preview is its own call, `PUT .../preview`. It is what participants read before bidding (the HackerRank link is never shown to bidders). Like the other problem fields it is editable only while the round is in `PREVIEW` (`409 INVALID_PHASE` afterwards). A blank or `null` text removes it. Add a "Question preview" text area to the problem editor.
 - `{level}` is 1, 2 or 3 (`400 VALIDATION_FAILED` with `details.level` otherwise). Creates or replaces that level's hint. Hints stay editable at any time.
 - Build the editor as one form per problem with three hint rows (level 1, 2, 3), each with text and password.
 
@@ -409,15 +475,16 @@ Settlement rule for display: for each problem, the top `slots` bidders win and a
 
 | Call | Body | Success |
 |---|---|---|
-| `GET /api/admin/users` | none | `200` `MeResponse[]`, participants only, sorted by name |
+| `GET /api/admin/users` (`?q=` optional) | none | `200` `MeResponse[]`, participants only, sorted by name. With `q`, only participants whose name or HackerRank ID contains the text (any letter case, spaces around it ignored); a blank `q` returns everyone, no match returns `[]`. Use it for the search box: type a name or HackerRank ID, read the `id`, and use it in the wallet buttons |
 | `GET /api/admin/users/{userId}/hints/{problemId}` | none | `200` `HintResponse`: the hint version and password matching this participant's current corruption level; `404 NOT_FOUND` if no hint has been written for that level yet |
 | `PUT /api/admin/users/{userId}/corruption-level` | `CorruptionLevelRequest` | `200` `MeResponse` |
 | `POST /api/admin/users/{userId}/revoke-sessions` | none | `204` |
 
 `revoke-sessions` signs the participant out everywhere: every token issued to them earlier is rejected with `401 TOKEN_INVALID` on its next use. They can sign in again normally. `404 USER_NOT_FOUND` for an unknown id. Use it for a cheater or a lost device; show a confirm popup first.
 
-The participant manager table shows name, HackerRank ID, email, coins and corruption level, with a row action
-menu for every button below. "Give hint" flow: confirm popup → `GET .../hints/{problemId}` to show which text and
+The participant manager table shows name, HackerRank ID, email, coins and corruption level, with a search box
+(`?q=`) above it and a row action menu for every button below. After a round, the admin searches for a participant,
+then uses the row's credit buttons, so nobody ever has to type or know a user id. "Give hint" flow: confirm popup → `GET .../hints/{problemId}` to show which text and
 password to hand out → `POST /api/admin/wallet/hint-deduction`.
 
 ### Wallet and devil buttons
@@ -431,8 +498,20 @@ Every call returns the resulting ledger entry (`balanceAfter` included). **Show 
 | Devil's deal | `/api/admin/wallet/devil-deal` | `DevilActionRequest` | `200` `DevilActionResponse` | Corruption level +1, coins + `config.devil.dealPayout`. `CORRUPTION_LIMIT_REACHED` at level 3 |
 | Redemption | `/api/admin/wallet/redemption` | `DevilActionRequest` | `200` `DevilActionResponse` | Corruption level −1, coins − `config.devil.redemptionCost`. `CORRUPTION_LIMIT_REACHED` at level 1, `INSUFFICIENT_BALANCE` |
 | Undo | `/api/admin/wallet/undo/{entryId}` | `UndoRequest` | `200` `LedgerEntryResponse` | Adds a `REVERSAL` entry. Undoing a devil entry also restores the previous corruption level. `404 NOT_FOUND`; `409 CONFLICT` if already undone or if the entry is itself a reversal |
+| Credit everyone | `/api/admin/wallet/credit-all` | `CreditAllRequest` | `200` `CreditAllResponse` | Gives every participant the same coins in one transaction: one `CUSTOM` ledger entry and one pop-up each. Admins are excluded; people who sign up later do not get it. `VALIDATION_FAILED` for amount < 1 (max 1,000,000), a blank `reason` (max 200, shown to every participant) or a `requestId` shorter than 8 characters, and `details.participants` when there are no participants. Same `requestId` again: `409 CONFLICT`, nobody is credited twice. A wrong run is undone entry by entry with the normal undo |
 
 Disable "Devil's deal" at level 3 and "Redemption" at level 1 using the participant's `corruptionLevel`.
+
+```ts
+interface CreditAllRequest {
+  amount: number;       // whole coins, 1..1000000
+  reason: string;       // required, max 200, shown to every participant
+  requestId: string;    // 8..100 chars; make a NEW one (e.g. a UUID) each time the confirm popup opens, and reuse it on a retry
+}
+interface CreditAllResponse { participants: number; amountEach: number; totalCredited: number }
+```
+
+Confirm popup for "Credit everyone": show the amount, the reason and the number of participants (count them from `GET /api/admin/users`). Run it after sign-ups close.
 `reason` on custom and undo is shown to the participant in their history, so label it for them.
 
 ### Ledger viewer
@@ -490,7 +569,8 @@ interface AuditLogResponse {
 | Auction controls (deadline, settle, summary) | `PUT .../bidding-deadline`, `POST .../settle`, `GET .../settlement` |
 | Problem bank manager | `/api/admin/problems...` |
 | Participant manager | `GET /api/admin/users`, `PUT .../corruption-level` |
-| Action buttons with confirm popups | `/api/admin/wallet/...` |
+| Action buttons with confirm popups | `/api/admin/wallet/...` (including credit-all) |
+| Slots, bid coverage, allocation, auto fill, manual assignment | `POST .../slots/auto`, `GET .../bid-coverage`, `GET .../allocation`, `POST .../auto-fill`, `POST .../assignments` |
 | Hint lookup | `GET /api/admin/users/{userId}/hints/{problemId}` |
 | Ledger viewer + undo | `GET /api/admin/ledger`, `POST /api/admin/wallet/undo/{entryId}` |
 | Audit log viewer | `GET /api/admin/audit` |
@@ -503,7 +583,7 @@ interface AuditLogResponse {
 | `PREVIEW` | Problem cards (title, category, tier, teaser, slots, reserve price). No bidding |
 | `BIDDING` | Sealed bid screen: amount input per problem, countdown to `biddingDeadline`, remaining balance after bids. Paused → read-only banner |
 | `SETTLEMENT` | "Bidding closed, results coming" |
-| `SOLVING` | Own results: won problems with HackerRank link and price paid; lost/unaffordable bids |
+| `SOLVING` | Own results: won problems (exactly 3 after auto fill) with HackerRank link and price paid; lost/unaffordable bids |
 | `RESULTS` | Same as solving plus leaderboard highlight |
 
 ---

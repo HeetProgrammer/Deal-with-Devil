@@ -16,6 +16,7 @@ public record AdminProblemResponse(
         String hackerRankLink,
         long basePrice,
         String teaser,
+        String preview,
         Long roundId,
         List<HintResponse> hints)
 {
@@ -24,7 +25,8 @@ public record AdminProblemResponse(
     {
         return new AdminProblemResponse(problem.getId(), problem.getTitle(), problem.getCategory(),
                 problem.getTier(), problem.getSlots(), problem.getHackerRankLink(), problem.getBasePrice(),
-                problem.getTeaser(), problem.getRound() == null ? null : problem.getRound().getId(),
+                problem.getTeaser(), problem.getPreview(),
+                problem.getRound() == null ? null : problem.getRound().getId(),
                 hints.stream().map(HintResponse::from).toList());
     }
 }

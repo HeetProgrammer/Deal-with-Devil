@@ -18,7 +18,8 @@ public record GameProperties(
         @NotNull @Valid Tiers basePrice,
         @NotNull @Valid Tiers solveReward,
         @Min(0) long hintPrice,
-        @NotNull @Valid Devil devil)
+        @NotNull @Valid Devil devil,
+        @Min(1) int winsPerRound)
 {
     /** One value per problem tier. */
     public record Tiers(@Min(0) long bronze, @Min(0) long silver, @Min(0) long gold)

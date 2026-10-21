@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.example.deal_with_devil_csa.config.GameProperties;
 import org.example.deal_with_devil_csa.domain.Bid;
 import org.example.deal_with_devil_csa.domain.BidStatus;
 import org.example.deal_with_devil_csa.domain.EventType;
@@ -24,8 +25,9 @@ import org.example.deal_with_devil_csa.repository.BidRepository;
 import org.example.deal_with_devil_csa.repository.ProblemRepository;
 import org.example.deal_with_devil_csa.repository.RoundRepository;
 import org.example.deal_with_devil_csa.repository.WalletRepository;
-import org.example.deal_with_devil_csa.service.VickreyCalculator.BidEntry;
-import org.example.deal_with_devil_csa.service.VickreyCalculator.Outcome;
+import org.example.deal_with_devil_csa.service.AllocationCalculator.Allocation;
+import org.example.deal_with_devil_csa.service.AllocationCalculator.BidEntry;
+import org.example.deal_with_devil_csa.service.AllocationCalculator.ProblemSpec;
 import org.example.deal_with_devil_csa.web.dto.SettlementSummaryResponse;
 import org.example.deal_with_devil_csa.web.dto.SettlementSummaryResponse.ProblemResult;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -35,16 +37,21 @@ import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 
 /**
- * Runs the Vickrey settlement for the current round, once, in one transaction: if anything fails, no coin
- * moves and no bid changes status.
+ * Runs the settlement for the current round, once, in one transaction: if anything fails, no coin moves and no bid
+ * changes status.
  *
- * Per problem (in id order): bids below the reserve price are not eligible; the top "slots" eligible bids win
- * and each pays the clearing price (see VickreyCalculator). A winner whose balance no longer covers the price
- * (an admin may have deducted coins since they bid) is marked UNAFFORDABLE and the slot is not reassigned.
- * Every other bid is LOST. Each bidder gets a personal notification, the round moves to SOLVING and everyone
- * gets a broadcast.
+ * The whole round is allocated in one go (see AllocationCalculator): all eligible bids (at or above the reserve
+ * price) are ranked by amount, then earlier submission, then bid id, and a bid is accepted only if its bidder has
+ * fewer than game.wins-per-round wins and its problem still has a free slot. Every winner of a problem pays that
+ * problem's price: the first bid turned away because the problem was full, else the reserve price. A winner whose
+ * balance no longer covers the price (an admin may have deducted coins since they bid) is marked UNAFFORDABLE and
+ * the slot is not reassigned. Every other bid is LOST. Each bidder gets a personal notification, the round moves to
+ * SOLVING and everyone gets a broadcast.
  *
- * The summary is always recomputed from the stored bids, so it can be read again later and always matches.
+ * Anyone left with fewer than the required number of problems is topped up afterwards by the separate auto fill
+ * step, not here.
+ *
+ * The summary is built from the stored bids (the winners' stored pricePaid), so it can be read again later.
  */
 @Service
 @RequiredArgsConstructor
@@ -56,6 +63,7 @@ public class SettlementService
     private final WalletRepository walletRepository;
     private final WalletService walletService;
     private final EventService eventService;
+    private final GameProperties gameProperties;
 
     @Transactional
     @PreAuthorize("hasRole('ADMIN')")
@@ -76,13 +84,29 @@ public class SettlementService
         }
 
         List<Problem> problems = problemRepository.findByRoundIdOrderByIdAsc(round.getId());
-        Map<Long, List<Bid>> pendingByProblem = bidRepository.findByRoundAndStatus(round.getId(), BidStatus.PENDING)
-                .stream()
-                .collect(Collectors.groupingBy(b -> b.getProblem().getId()));
+        List<Bid> pending = bidRepository.findByRoundAndStatus(round.getId(), BidStatus.PENDING);
 
-        for (Problem problem : problems)
+        Allocation allocation = AllocationCalculator.resolve(toSpecs(problems), toEntries(pending),
+                gameProperties.winsPerRound());
+        Map<Long, Bid> bidsById = pending.stream().collect(Collectors.toMap(Bid::getId, Function.identity()));
+
+        Set<Long> handled = new HashSet<>();
+        for (BidEntry winner : allocation.winners())
         {
-            settleProblem(problem, pendingByProblem.getOrDefault(problem.getId(), List.of()));
+            Bid bid = bidsById.get(winner.bidId());
+            chargeWinner(bid.getProblem(), bid, allocation.priceByProblem().get(winner.problemId()));
+            handled.add(bid.getId());
+        }
+
+        for (Bid bid : pending)
+        {
+            if (!handled.contains(bid.getId()))
+            {
+                bid.setStatus(BidStatus.LOST);
+                eventService.personal(bid.getUser().getId(), EventType.BID_LOST,
+                        "You did not win \"" + bid.getProblem().getTitle() + "\".", null, null, null,
+                        bid.getProblem().getId());
+            }
         }
 
         round.setPhase(RoundPhase.SOLVING);
@@ -107,37 +131,9 @@ public class SettlementService
         return buildSummary(round);
     }
 
-    // ---- Settlement of one problem ----
+    // ---- Charging one winner ----
 
-    private void settleProblem(Problem problem, List<Bid> pendingBids)
-    {
-        List<Bid> eligible = pendingBids.stream()
-                .filter(b -> b.getAmount() >= problem.getBasePrice())
-                .toList();
-        Map<Long, Bid> bidsById = eligible.stream().collect(Collectors.toMap(Bid::getId, Function.identity()));
-
-        Outcome outcome = VickreyCalculator.resolve(toEntries(eligible), problem.getSlots(), problem.getBasePrice());
-
-        Set<Long> handled = new HashSet<>();
-        for (BidEntry winner : outcome.winners())
-        {
-            Bid bid = bidsById.get(winner.bidId());
-            chargeWinner(problem, bid, outcome.price());
-            handled.add(bid.getId());
-        }
-
-        for (Bid bid : pendingBids)
-        {
-            if (!handled.contains(bid.getId()))
-            {
-                bid.setStatus(BidStatus.LOST);
-                eventService.personal(bid.getUser().getId(), EventType.BID_LOST,
-                        "You did not win \"" + problem.getTitle() + "\".", null, null, null, problem.getId());
-            }
-        }
-    }
-
-    /** Takes the clearing price from a winner, or marks them UNAFFORDABLE if their balance no longer covers it. */
+    /** Takes the problem's price from a winner, or marks them UNAFFORDABLE if their balance no longer covers it. */
     private void chargeWinner(Problem problem, Bid bid, long price)
     {
         Long userId = bid.getUser().getId();
@@ -173,6 +169,11 @@ public class SettlementService
 
     // ---- Summary ----
 
+    /**
+     * One line per problem. The clearing price is read from what the winners actually paid (the highest stored
+     * pricePaid among the problem's WON bids; later fills at the reserve price can never raise it), and is the
+     * reserve price for a problem nobody won. totalCollected is the sum of everything paid.
+     */
     private SettlementSummaryResponse buildSummary(Round round)
     {
         List<Problem> problems = problemRepository.findByRoundIdOrderByIdAsc(round.getId());
@@ -186,22 +187,21 @@ public class SettlementService
             List<Bid> bids = bidsByProblem.getOrDefault(problem.getId(), List.of());
             int winners = 0;
             int unaffordable = 0;
+            long clearingPrice = problem.getBasePrice();
             for (Bid bid : bids)
             {
                 if (bid.getStatus() == BidStatus.WON)
                 {
                     winners++;
-                    totalCollected += bid.getPricePaid() == null ? 0L : bid.getPricePaid();
+                    long paid = bid.getPricePaid() == null ? 0L : bid.getPricePaid();
+                    totalCollected += paid;
+                    clearingPrice = Math.max(clearingPrice, paid);
                 }
                 else if (bid.getStatus() == BidStatus.UNAFFORDABLE)
                 {
                     unaffordable++;
                 }
             }
-
-            List<Bid> eligible = bids.stream().filter(b -> b.getAmount() >= problem.getBasePrice()).toList();
-            long clearingPrice = VickreyCalculator
-                    .resolve(toEntries(eligible), problem.getSlots(), problem.getBasePrice()).price();
 
             results.add(new ProblemResult(problem.getId(), problem.getTitle(), bids.size(), winners, unaffordable,
                     clearingPrice));
@@ -211,10 +211,18 @@ public class SettlementService
 
     // ---- Internals ----
 
+    private static List<ProblemSpec> toSpecs(List<Problem> problems)
+    {
+        return problems.stream()
+                .map(p -> new ProblemSpec(p.getId(), p.getSlots(), p.getBasePrice()))
+                .toList();
+    }
+
     private static List<BidEntry> toEntries(List<Bid> bids)
     {
         return bids.stream()
-                .map(b -> new BidEntry(b.getId(), b.getUser().getId(), b.getAmount(), b.getSubmittedAt()))
+                .map(b -> new BidEntry(b.getId(), b.getUser().getId(), b.getProblem().getId(), b.getAmount(),
+                        b.getSubmittedAt()))
                 .toList();
     }
 

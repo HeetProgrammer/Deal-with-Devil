@@ -24,6 +24,7 @@ import org.example.deal_with_devil_csa.domain.User;
 import org.example.deal_with_devil_csa.domain.Wallet;
 import org.example.deal_with_devil_csa.repository.AuditLogRepository;
 import org.example.deal_with_devil_csa.repository.BidRepository;
+import org.example.deal_with_devil_csa.repository.BulkCreditRepository;
 import org.example.deal_with_devil_csa.repository.GameEventRepository;
 import org.example.deal_with_devil_csa.repository.LedgerEntryRepository;
 import org.example.deal_with_devil_csa.repository.ProblemHintRepository;
@@ -74,6 +75,7 @@ abstract class IntegrationTestSupport
     @Autowired protected ProblemRepository problemRepository;
     @Autowired protected ProblemHintRepository hintRepository;
     @Autowired protected BidRepository bidRepository;
+    @Autowired protected BulkCreditRepository bulkCreditRepository;
     @Autowired protected LedgerEntryRepository ledgerEntryRepository;
     @Autowired protected GameEventRepository eventRepository;
     @Autowired protected AuditLogRepository auditLogRepository;
@@ -87,6 +89,7 @@ abstract class IntegrationTestSupport
         auditLogRepository.deleteAllInBatch();
         eventRepository.deleteAllInBatch();
         bidRepository.deleteAllInBatch();
+        bulkCreditRepository.deleteAllInBatch();
         ledgerEntryRepository.deleteAllInBatch();
         hintRepository.deleteAllInBatch();
         problemRepository.deleteAllInBatch();

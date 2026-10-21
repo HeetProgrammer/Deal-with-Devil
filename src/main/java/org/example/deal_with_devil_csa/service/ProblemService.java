@@ -1,5 +1,6 @@
 package org.example.deal_with_devil_csa.service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -15,9 +16,12 @@ import org.example.deal_with_devil_csa.exception.ErrorCode;
 import org.example.deal_with_devil_csa.repository.ProblemHintRepository;
 import org.example.deal_with_devil_csa.repository.ProblemRepository;
 import org.example.deal_with_devil_csa.repository.RoundRepository;
+import org.example.deal_with_devil_csa.repository.UserRepository;
 import org.example.deal_with_devil_csa.web.dto.AdminProblemResponse;
+import org.example.deal_with_devil_csa.web.dto.AutoSlotsResponse;
 import org.example.deal_with_devil_csa.web.dto.HintRequest;
 import org.example.deal_with_devil_csa.web.dto.HintResponse;
+import org.example.deal_with_devil_csa.web.dto.ProblemPreviewRequest;
 import org.example.deal_with_devil_csa.web.dto.ProblemPreviewResponse;
 import org.example.deal_with_devil_csa.web.dto.ProblemRequest;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -42,6 +46,7 @@ public class ProblemService
     private final ProblemHintRepository hintRepository;
     private final RoundRepository roundRepository;
     private final GameProperties gameProperties;
+    private final UserRepository userRepository;
 
     // ---- Admin: problem bank ----
 
@@ -92,6 +97,79 @@ public class ProblemService
                 ? problemRepository.findAllByOrderByIdAsc()
                 : problemRepository.findByRoundIdOrderByIdAsc(roundId);
         return problems.stream().map(this::toAdminResponse).toList();
+    }
+
+    // ---- Admin: question preview ----
+
+    /**
+     * Sets (or, with blank text, removes) the question preview participants read before bidding. Own endpoint so
+     * the admin can add it without resending the whole problem. Like the other problem fields it can only be
+     * changed while the problem's round is in PREVIEW, so nobody bids on text that changes under them.
+     */
+    @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
+    public AdminProblemResponse setPreview(Long problemId, ProblemPreviewRequest request)
+    {
+        Problem problem = load(problemId);
+        requireEditable(problem);
+        String text = request.preview() == null ? null : request.preview().trim();
+        problem.setPreview(text == null || text.isEmpty() ? null : text);
+        return toAdminResponse(problemRepository.save(problem));
+    }
+
+    // ---- Admin: auto slots ----
+
+    /**
+     * The "auto slots" button (Phase 9). Sets the slots of every problem of the current round so that the total is
+     * exactly game.wins-per-round x participants (a participant is anyone with the role PARTICIPANT and a completed
+     * profile), spread as evenly as possible (see SlotSpreader). The result depends only on the current counts, so it
+     * is safe to press again whenever someone new has signed in; nobody edits slots by hand. With dryRun nothing is
+     * saved and the response shows what the button would do. Only possible while the round is in PREVIEW.
+     */
+    @Transactional
+    @PreAuthorize("hasRole('ADMIN')")
+    public AutoSlotsResponse autoSlots(boolean dryRun)
+    {
+        Round round = roundRepository.findTopByOrderByNumberDesc()
+                .orElseThrow(() -> new ApiException(ErrorCode.ROUND_NOT_FOUND, "No round has been started yet."));
+        if (round.getPhase() != RoundPhase.PREVIEW)
+        {
+            throw new ApiException(ErrorCode.INVALID_PHASE, "Slots can only be set while the round is in preview.");
+        }
+
+        List<Problem> problems = problemRepository.findByRoundIdOrderByIdAsc(round.getId());
+        int participants = (int) userRepository.countCompleteParticipants();
+        int wins = gameProperties.winsPerRound();
+
+        if (participants == 0)
+        {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, null,
+                    Map.of("participants", "No participant has completed their profile yet."));
+        }
+        if (problems.size() < wins)
+        {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, null,
+                    Map.of("problems", "The round needs at least " + wins + " problems (it has " + problems.size() + ")."));
+        }
+
+        int[] slots = SlotSpreader.spread(participants, problems.size(), wins);
+        List<AutoSlotsResponse.ProblemSlots> perProblem = new ArrayList<>();
+        int assigned = 0;
+        for (int i = 0; i < problems.size(); i++)
+        {
+            Problem problem = problems.get(i);
+            if (!dryRun)
+            {
+                problem.setSlots(slots[i]);
+            }
+            perProblem.add(new AutoSlotsResponse.ProblemSlots(problem.getId(), problem.getTitle(), slots[i]));
+            assigned += slots[i];
+        }
+        if (!dryRun)
+        {
+            problemRepository.saveAll(problems);
+        }
+        return new AutoSlotsResponse(dryRun, participants, problems.size(), wins * participants, assigned, perProblem);
     }
 
     // ---- Admin: hints ----

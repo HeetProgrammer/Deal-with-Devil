@@ -1,7 +1,9 @@
 package org.example.deal_with_devil_csa.repository;
 
+import java.util.List;
 import java.util.Optional;
 
+import org.example.deal_with_devil_csa.domain.Role;
 import org.example.deal_with_devil_csa.domain.User;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -13,6 +15,18 @@ public interface UserRepository extends JpaRepository<User, Long>
     Optional<User> findByEmail(String email);
 
     Optional<User> findByGoogleId(String googleId);
+
+    List<User> findByRole(Role role);
+
+    /**
+     * How many participants count for the slot rule and the opening block: role PARTICIPANT with a completed
+     * profile (name and HackerRank ID filled), exactly what User.isProfileComplete() says. Small data set, so it is
+     * counted in Java instead of a query.
+     */
+    default long countCompleteParticipants()
+    {
+        return findByRole(Role.PARTICIPANT).stream().filter(User::isProfileComplete).count();
+    }
 
     /**
      * Adds one to the user's token version in a single atomic update, so every JWT issued earlier is rejected.

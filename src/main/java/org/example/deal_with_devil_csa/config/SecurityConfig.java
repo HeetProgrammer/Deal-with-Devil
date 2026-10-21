@@ -18,6 +18,8 @@ import org.springframework.security.config.annotation.method.configuration.Enabl
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
@@ -55,6 +57,20 @@ public class SecurityConfig
                 // Right after the JWT filter, so the signed-in user is known when admin calls are audited.
                 .addFilterAfter(auditFilter, JwtAuthenticationFilter.class);
         return http.build();
+    }
+
+    /**
+     * Nothing in this app signs in with a username and password (login is Google or the fallback admin endpoint, then
+     * our own JWT). Defining this bean stops Spring Boot from creating its default user and printing a random
+     * password at startup. It never finds anybody.
+     */
+    @Bean
+    public UserDetailsService userDetailsService()
+    {
+        return username ->
+        {
+            throw new UsernameNotFoundException("Password sign-in is not used.");
+        };
     }
 
     /** Lets the React app (on another origin) send the Authorization header. */

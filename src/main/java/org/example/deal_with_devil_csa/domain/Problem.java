@@ -59,6 +59,13 @@ public class Problem
     @Column(length = 500)
     private String teaser;
 
+    /**
+     * The question preview participants read before bidding (for example the problem statement or a sample).
+     * Optional. Set by the admin through its own endpoint; the HackerRank link itself is never shown to bidders.
+     */
+    @Column(length = 4000)
+    private String preview;
+
     /** The round this problem is played in, or null while it is only in the bank. */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "round_id")

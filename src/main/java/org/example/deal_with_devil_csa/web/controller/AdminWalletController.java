@@ -2,6 +2,8 @@ package org.example.deal_with_devil_csa.web.controller;
 
 import org.example.deal_with_devil_csa.security.CurrentUser;
 import org.example.deal_with_devil_csa.service.AdminWalletService;
+import org.example.deal_with_devil_csa.web.dto.CreditAllRequest;
+import org.example.deal_with_devil_csa.web.dto.CreditAllResponse;
 import org.example.deal_with_devil_csa.web.dto.CustomAmountRequest;
 import org.example.deal_with_devil_csa.web.dto.DevilActionRequest;
 import org.example.deal_with_devil_csa.web.dto.DevilActionResponse;
@@ -63,6 +65,17 @@ public class AdminWalletController
                                           @Valid @RequestBody DevilActionRequest request)
     {
         return adminWalletService.redeem(admin.id(), request);
+    }
+
+    /**
+     * "Credit everyone": the same coins for every participant, one ledger entry and one pop-up each. The request id
+     * makes a double click or a retry harmless (the repeat gets 409 CONFLICT and credits nobody again).
+     */
+    @PostMapping("/credit-all")
+    public CreditAllResponse creditAll(@AuthenticationPrincipal CurrentUser admin,
+                                       @Valid @RequestBody CreditAllRequest request)
+    {
+        return adminWalletService.creditAll(admin.id(), request);
     }
 
     @PostMapping("/undo/{entryId}")
